@@ -41,6 +41,26 @@ pub struct Settings {
     pub games: Vec<GameEntry>,
     pub game_detection: GameDetection,
     pub share: ShareSettings,
+    pub viewer: ViewerSettings,
+}
+
+/// Clip viewer controls. `keys` maps an action id to its keys (browser
+/// `KeyboardEvent.key` values); actions missing from the map use the UI's
+/// defaults, so new defaults reach users who never changed them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ViewerSettings {
+    pub keys: std::collections::BTreeMap<String, Vec<String>>,
+    pub short_seek_secs: f32,
+    pub long_seek_secs: f32,
+    /// Speed the slow-motion key switches to.
+    pub slow_motion_speed: f32,
+}
+
+impl Default for ViewerSettings {
+    fn default() -> Self {
+        Self { keys: Default::default(), short_seek_secs: 1.0, long_seek_secs: 5.0, slow_motion_speed: 0.25 }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -249,6 +269,7 @@ impl Default for Settings {
             games: Vec::new(),
             game_detection: GameDetection::default(),
             share: ShareSettings::default(),
+            viewer: ViewerSettings::default(),
         }
     }
 }
@@ -290,6 +311,12 @@ impl Settings {
         self.replay.ram_cap_mb = self.replay.ram_cap_mb.clamp(64, 32 * 1024);
         self.encoder.keyframe_interval_secs = self.encoder.keyframe_interval_secs.clamp(0.25, 10.0);
         self.encoder.quality = self.encoder.quality.min(51);
+        self.viewer.short_seek_secs = self.viewer.short_seek_secs.clamp(0.1, 60.0);
+        self.viewer.long_seek_secs = self.viewer.long_seek_secs.clamp(0.5, 300.0);
+        self.viewer.slow_motion_speed = self.viewer.slow_motion_speed.clamp(0.1, 0.9);
+        for keys in self.viewer.keys.values_mut() {
+            keys.truncate(2);
+        }
         for c in &mut self.clip_presets {
             c.length_secs = c.length_secs.clamp(1, 3600);
         }

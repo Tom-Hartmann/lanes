@@ -170,6 +170,14 @@ export interface Settings {
     fullscreenHeuristic: boolean;
     autoSwitchProfile: boolean;
   };
+  viewer: {
+    /** Action id -> keys (KeyboardEvent.key); missing actions use the defaults. */
+    keys: Record<string, string[]>;
+    shortSeekSecs: number;
+    longSeekSecs: number;
+    /** Speed the slow-motion key switches to. */
+    slowMotionSpeed: number;
+  };
   share: {
     /** Discord channel webhook URL (Server settings → Integrations → Webhooks). */
     discordWebhook: string | null;

@@ -1,10 +1,12 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { IconFolder, IconScissors, IconX } from "../../components/icons";
 import { Badge, Button, Callout, ConfirmButton, NumberInput, Spinner } from "../../components/ui";
 import { formatBytes, formatDate, formatDuration } from "../../lib/format";
 import { api, errorMessage, type ClipInfo } from "../../lib/ipc";
+import { actionForKey, keyLabel, resolveViewerKeys, VIEWER_ACTIONS } from "../../lib/viewerKeys";
 import { attempt, notify } from "../../store/noticeStore";
+import { useSettingsStore } from "../../store/settingsStore";
 import { forgetThumbnail } from "./thumbnails";
 import { SharePanel } from "./SharePanel";
 import { TrimBar } from "./TrimBar";
@@ -39,21 +41,6 @@ function saveSpeed(v: number) {
   }
 }
 
-const SHORTCUTS: [string, string][] = [
-  ["Space / K", "Play / pause"],
-  ["← / →", "Back / forward 1 s (Shift: 5 s)"],
-  ["J / L", "Back / forward 5 s (Shift: 10 s)"],
-  [", / .", "Previous / next frame"],
-  ["S", "Slow motion on/off (0.25×)"],
-  ["[ / ]", "Slower / faster"],
-  ["Home / End, 0–9", "Jump to start / end / 0–90 %"],
-  ["I / O", "Set trim start / end at the playhead"],
-  ["P", "Preview the trim selection"],
-  ["M / F", "Mute / fullscreen"],
-  ["?", "Show / hide these shortcuts"],
-  ["Esc", "Close"],
-];
-
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
 
@@ -66,6 +53,11 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
   const [playhead, setPlayhead] = useState(0);
   const [busy, setBusy] = useState<"trim" | "remux" | null>(null);
   const previewEnd = useRef<number | null>(null);
+  const viewerSettings = useSettingsStore((s) => s.settings?.viewer);
+  const keyMap = useMemo(() => resolveViewerKeys(viewerSettings), [viewerSettings]);
+  const shortSeek = viewerSettings?.shortSeekSecs ?? 1;
+  const longSeek = viewerSettings?.longSeekSecs ?? 5;
+  const slowSpeed = viewerSettings?.slowMotionSpeed ?? 0.25;
   const [speed, setSpeedState] = useState(loadSpeed);
   const [help, setHelp] = useState(false);
   const [flash, setFlash] = useState<{ text: string; id: number } | null>(null);
@@ -127,7 +119,7 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
     const nudge = (d: number) => {
       if (!v) return;
       seek(Math.min(Math.max(v.currentTime + d, 0), duration || v.duration || 0));
-      show(Math.abs(d) < 1 ? (d > 0 ? "+1 frame" : "−1 frame") : `${d > 0 ? "+" : "−"}${Math.abs(d)} s`);
+      show(Math.abs(d) < 1 ? (d > 0 ? "+1 frame" : "−1 frame") : `${d > 0 ? "+" : "−"}${Math.round(Math.abs(d) * 10) / 10} s`);
     };
     const step = (dir: 1 | -1) => {
       const i = SPEEDS.indexOf(speed);
@@ -135,93 +127,86 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
       setSpeed(next);
       show(`${next}×`);
     };
+    if (/^[0-9]$/.test(e.key)) {
+      if (duration > 0) seek((Number(e.key) / 10) * duration);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    const action = actionForKey(keyMap, e.key);
     let handled = true;
-    switch (e.key) {
-      case " ":
-      case "k":
-      case "K":
+    switch (action) {
+      case "playPause":
         if (v) {
           if (v.paused) void v.play();
           else v.pause();
           show(v.paused ? "Pause" : "Play");
         }
         break;
-      case "ArrowLeft":
-        nudge(e.shiftKey ? -5 : -1);
+      case "back":
+        nudge(-(e.shiftKey ? longSeek : shortSeek));
         break;
-      case "ArrowRight":
-        nudge(e.shiftKey ? 5 : 1);
+      case "forward":
+        nudge(e.shiftKey ? longSeek : shortSeek);
         break;
-      case "j":
-      case "J":
-        nudge(e.shiftKey ? -10 : -5);
+      case "backLong":
+        nudge(-(e.shiftKey ? longSeek * 2 : longSeek));
         break;
-      case "l":
-      case "L":
-        nudge(e.shiftKey ? 10 : 5);
+      case "forwardLong":
+        nudge(e.shiftKey ? longSeek * 2 : longSeek);
         break;
-      case ",":
+      case "frameBack":
         v?.pause();
         nudge(-FRAME);
         break;
-      case ".":
+      case "frameForward":
         v?.pause();
         nudge(FRAME);
         break;
-      case "s":
-      case "S": {
-        const next = speed === 1 ? 0.25 : 1;
+      case "slowMotion": {
+        const next = speed === 1 ? slowSpeed : 1;
         setSpeed(next);
-        show(next === 1 ? "Normal speed" : "Slow motion 0.25×");
+        show(next === 1 ? "Normal speed" : `Slow motion ${next}×`);
         break;
       }
-      case "[":
-      case "-":
+      case "slower":
         step(-1);
         break;
-      case "]":
-      case "+":
-      case "=":
+      case "faster":
         step(1);
         break;
-      case "Home":
+      case "toStart":
         seek(0);
         break;
-      case "End":
+      case "toEnd":
         seek(duration);
         break;
-      case "i":
-      case "I":
+      case "trimStart":
         setRange([Math.min(playhead, end - 0.5), end]);
         show("Trim start");
         break;
-      case "o":
-      case "O":
+      case "trimEnd":
         setRange([start, Math.max(playhead, start + 0.5)]);
         show("Trim end");
         break;
-      case "p":
-      case "P":
+      case "preview":
         preview();
         break;
-      case "m":
-      case "M":
+      case "mute":
         if (v) {
           v.muted = !v.muted;
           show(v.muted ? "Muted" : "Sound on");
         }
         break;
-      case "f":
-      case "F":
+      case "fullscreen":
         if (document.fullscreenElement) void document.exitFullscreen();
         else void v?.requestFullscreen();
         break;
-      case "?":
+      case "help":
         setHelp((h) => !h);
         break;
       default:
-        if (/^[0-9]$/.test(e.key) && duration > 0) seek((Number(e.key) / 10) * duration);
-        else handled = false;
+        handled = false;
     }
     if (handled) {
       e.preventDefault();
@@ -297,12 +282,22 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
               <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/80 p-4" onPointerDown={() => setHelp(false)}>
                 <table className="text-sm">
                   <tbody>
-                    {SHORTCUTS.map(([k, what]) => (
-                      <tr key={k}>
-                        <td className="py-0.5 pr-6 text-right font-mono text-sky-300">{k}</td>
-                        <td className="py-0.5 text-zinc-200">{what}</td>
+                    {VIEWER_ACTIONS.map((a) => (
+                      <tr key={a.id}>
+                        <td className="py-0.5 pr-6 text-right font-mono text-sky-300">
+                          {keyMap[a.id].length ? keyMap[a.id].map(keyLabel).join(" / ") : "—"}
+                        </td>
+                        <td className="py-0.5 text-zinc-200">{a.label}</td>
                       </tr>
                     ))}
+                    <tr>
+                      <td className="py-0.5 pr-6 text-right font-mono text-sky-300">0–9 / Esc</td>
+                      <td className="py-0.5 text-zinc-200">Jump to 0–90 % / close</td>
+                    </tr>
+                    <tr>
+                      <td />
+                      <td className="pt-2 text-xs text-zinc-500">Change these in Settings → Clip viewer</td>
+                    </tr>
                   </tbody>
                 </table>
               </div>

@@ -8,6 +8,7 @@ import { OutputSection } from "./OutputSection";
 import { PresetsSection } from "./PresetsSection";
 import { ReplaySection } from "./ReplaySection";
 import { SharingSection } from "./SharingSection";
+import { ViewerSection } from "./ViewerSection";
 
 export function SettingsPage() {
   const settings = useSettingsStore((s) => s.settings);
@@ -26,6 +27,7 @@ export function SettingsPage() {
           <EncoderSection enc={settings.encoder} />
           <ReplaySection settings={settings} />
           <PresetsSection settings={settings} />
+          <ViewerSection settings={settings} />
         </div>
         <div className="flex min-w-0 flex-col gap-4">
           <OutputSection settings={settings} />
