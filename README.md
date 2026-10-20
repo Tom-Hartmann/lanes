@@ -74,7 +74,7 @@ Every source on its own track, so you can edit them separately later.
 
 ### Admin mode & autostart
 - Start with Windows: delay, minimized, start the replay buffer, load a profile
-- Optional admin mode for games running as administrator: one UAC prompt to set up, then no more prompts
+- Optional admin mode for games running as administrator: one UAC prompt to set up, then no more prompts (no code-signing certificate needed)
 - An Admin / Standard badge shows which mode Lanes is in
 
 ### Lightweight
@@ -149,8 +149,8 @@ pnpm build                                  # release + per-machine NSIS install
 
 Off by default; the app runs `asInvoker`. Enabling it in Settings shows one UAC prompt, which registers
 a Task Scheduler task (COM API) that starts Lanes elevated at logon (if "Start with Windows" is on) and
-on demand from the tray ("Restart as administrator") without further prompts. The task only points to a
-signed exe under Program Files. Disabling it, or uninstalling, removes the task. See
+on demand from the tray ("Restart as administrator") without further prompts. The task only points to an
+exe under Program Files that only administrators can modify. Disabling it, or uninstalling, removes the task. See
 `platform/src/admin` and `docs/SIGNING.md`.
 
 ## Known limitations

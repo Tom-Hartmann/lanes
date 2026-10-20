@@ -440,8 +440,11 @@ pub async fn set_run_as_admin(app: AppHandle, enabled: bool) -> CmdResult<AppInf
 /// Explains admin-mode failures in user terms.
 fn admin_error(e: admin::AdminError) -> String {
     match e {
-        admin::AdminError::Unsigned(_) => "this Lanes build is not code-signed. Admin mode only runs a signed Lanes, so             that a swapped exe can never get administrator rights. Install a signed build (see docs/SIGNING.md)."
+        admin::AdminError::Unsigned(_) => "lanes.exe carries a broken signature, so it may have been modified.             Reinstall Lanes before turning on admin mode."
             .into(),
+        admin::AdminError::NotProtected(why) => format!(
+            "{why}. Admin mode only starts a Lanes that just administrators can modify; reinstall it with the installer."
+        ),
         admin::AdminError::Cancelled => "the Windows confirmation (UAC) was cancelled".into(),
         other => other.to_string(),
     }

@@ -2,6 +2,7 @@
 //! Task Scheduler COM calls in `admin::scheduler`, every `unsafe` block of the
 //! crate lives below this module.
 
+pub mod acl;
 pub mod com;
 pub mod registry;
 pub mod shell;

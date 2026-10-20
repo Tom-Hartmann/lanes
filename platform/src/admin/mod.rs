@@ -31,7 +31,7 @@ use windows::Win32::UI::Shell::{FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86}
 use windows::core::HRESULT;
 
 use crate::sys::com::{self, ComApartment};
-use crate::sys::{shell, token, trust};
+use crate::sys::{acl, shell, token, trust};
 use crate::paths;
 use scheduler::{Scheduler, TaskSpec};
 
@@ -82,6 +82,8 @@ pub enum AdminError {
     NotProtectedLocation(PathBuf),
     #[error("signature check failed: {0}")]
     Unsigned(String),
+    #[error("{0}")]
+    NotProtected(String),
     #[error("{} is not the running executable", .0.display())]
     NotCurrentExe(PathBuf),
     #[error("this operation requires administrator rights")]
@@ -105,7 +107,7 @@ impl AdminError {
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::NotElevated => exit_code::NOT_ELEVATED,
-            Self::NotProtectedLocation(_) | Self::NotCurrentExe(_) => exit_code::NOT_PROTECTED_LOCATION,
+            Self::NotProtectedLocation(_) | Self::NotCurrentExe(_) | Self::NotProtected(_) => exit_code::NOT_PROTECTED_LOCATION,
             Self::Unsigned(_) => exit_code::UNSIGNED,
             Self::UserMismatch(_) => exit_code::USER_MISMATCH,
             _ => exit_code::FAILED,
@@ -124,8 +126,7 @@ impl AdminError {
 /// that would be refused anyway does not show a prompt.
 pub fn install_via_uac(opts: &TaskOptions) -> Result<(), AdminError> {
     let exe = std::env::current_exe()?;
-    verify_install_location(&exe)?;
-    verify_signature(&exe)?;
+    verify_trust(&exe)?;
     // Tell the helper who we are, so it can refuse to register the task for
     // whatever account the user typed into an over-the-shoulder prompt.
     let expect_user = token::current_user_sid().ok();
@@ -255,8 +256,7 @@ pub fn install_task(exe: &Path, opts: &TaskOptions) -> Result<(), AdminError> {
     if !paths::same_path(&exe, &current) {
         return Err(AdminError::NotCurrentExe(exe));
     }
-    verify_install_location(&exe)?;
-    let signer = verify_signature(&exe)?;
+    let signer = verify_trust(&exe)?;
 
     let user_sid = token::current_user_sid()?;
     let sddl = task_sddl(&user_sid).ok_or_else(|| io::Error::other(format!("unexpected SID format {user_sid}")))?;
@@ -323,6 +323,74 @@ pub fn verify_install_location(exe: &Path) -> Result<(), AdminError> {
 /// Debug builds accept an unsigned file when the `LANES_ALLOW_UNSIGNED_ADMIN`
 /// environment variable is `1`, to test admin mode without a certificate.
 /// Release builds never do.
+/// SIDs allowed to own or modify the exe and its folder: SYSTEM,
+/// Administrators, TrustedInstaller and CREATOR OWNER (which resolves to the
+/// owner, itself checked).
+const PRIVILEGED_SIDS: &[&str] = &[
+    "S-1-5-18",
+    "S-1-5-32-544",
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+    "S-1-3-0",
+];
+
+/// Refuses unless only privileged accounts own and may modify `path`.
+pub(crate) fn check_privileged_only(path: &Path, owner: &str, writers: &[String]) -> Result<(), AdminError> {
+    if !PRIVILEGED_SIDS.contains(&owner) {
+        return Err(AdminError::NotProtected(format!("{} is owned by a non-admin account ({owner})", path.display())));
+    }
+    if let Some(w) = writers.iter().find(|w| !PRIVILEGED_SIDS.contains(&w.as_str())) {
+        return Err(AdminError::NotProtected(format!("{} can be modified by a non-admin account ({w})", path.display())));
+    }
+    Ok(())
+}
+
+/// The exe and its folder (which also holds the DLLs it loads) must be
+/// writable by administrators only, so nothing running without admin rights
+/// can replace what the elevated task starts.
+pub fn verify_protected_permissions(exe: &Path) -> Result<(), AdminError> {
+    let mut targets = vec![exe.to_path_buf()];
+    if let Some(dir) = exe.parent() {
+        targets.push(dir.to_path_buf());
+    }
+    for t in targets {
+        let (owner, writers) = acl::owner_and_writers(&t)?;
+        check_privileged_only(&t, &owner, &writers)?;
+    }
+    Ok(())
+}
+
+/// What admin mode requires of the exe it will start elevated:
+/// 1. installed under Program Files,
+/// 2. exe and folder owned and writable only by administrators,
+/// 3. if it carries a signature, that signature must be intact.
+///
+/// An unsigned (or self-signed, untrusted) build is accepted when 1 and 2
+/// hold: those are what stop a program without admin rights from swapping
+/// the exe. A present-but-broken signature (tampering) is always refused.
+/// Returns a short description for the log.
+pub fn verify_trust(exe: &Path) -> Result<String, AdminError> {
+    verify_install_location(exe)?;
+    verify_protected_permissions(exe)?;
+    match trust::verify_embedded(exe) {
+        Ok(signer) => Ok(format!("signed by {signer}")),
+        Err(e) if signature_absent_or_untrusted(e.code()) => {
+            log::info!("{} is not signed by a trusted publisher ({}); relying on its protected install location", exe.display(), e.message());
+            Ok("unsigned, protected install location".to_owned())
+        }
+        Err(e) => Err(AdminError::Unsigned(format!("{}: {}", exe.display(), e.message()))),
+    }
+}
+
+/// No signature, or a valid signature from a certificate this PC does not
+/// trust (self-signed): fine under `verify_trust`. Anything else (bad
+/// digest, revoked, malformed) points to tampering.
+fn signature_absent_or_untrusted(code: windows::core::HRESULT) -> bool {
+    const TRUST_E_NOSIGNATURE: u32 = 0x800B_0100;
+    const CERT_E_UNTRUSTEDROOT: u32 = 0x800B_0109;
+    const CERT_E_CHAINING: u32 = 0x800B_010A;
+    matches!(code.0 as u32, TRUST_E_NOSIGNATURE | CERT_E_UNTRUSTEDROOT | CERT_E_CHAINING)
+}
+
 pub fn verify_signature(exe: &Path) -> Result<String, AdminError> {
     match trust::verify_embedded(exe) {
         Ok(signer) => Ok(signer),
@@ -435,6 +503,42 @@ fn task_sddl(user_sid: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn privileged_only_policy() {
+        let p = Path::new(r"C:\Program Files\Lanes\lanes.exe");
+        let admins = "S-1-5-32-544".to_string();
+        let system = "S-1-5-18".to_string();
+        let users = "S-1-5-32-545".to_string();
+        let me = "S-1-5-21-1-2-3-1000".to_string();
+        assert!(check_privileged_only(p, &admins, &[admins.clone(), system.clone()]).is_ok());
+        assert!(matches!(check_privileged_only(p, &admins, &[admins.clone(), users]), Err(AdminError::NotProtected(_))));
+        assert!(matches!(check_privileged_only(p, &me, std::slice::from_ref(&admins)), Err(AdminError::NotProtected(_))));
+        assert!(matches!(check_privileged_only(p, &admins, &["S-1-1-0".to_string()]), Err(AdminError::NotProtected(_))));
+    }
+
+    #[test]
+    fn signature_states() {
+        use windows::core::HRESULT;
+        assert!(signature_absent_or_untrusted(HRESULT(0x800B_0100_u32 as i32))); // no signature
+        assert!(signature_absent_or_untrusted(HRESULT(0x800B_0109_u32 as i32))); // self-signed root
+        assert!(!signature_absent_or_untrusted(HRESULT(0x8009_6010_u32 as i32))); // bad digest = tampered
+        assert!(!signature_absent_or_untrusted(HRESULT(0x800B_010C_u32 as i32))); // revoked
+    }
+
+    /// Real files: Program Files\Lanes passes (when installed), a temp file does not.
+    #[test]
+    fn permissions_of_real_files() {
+        let tmp = std::env::temp_dir().join(format!("lanes-acl-{}.exe", std::process::id()));
+        std::fs::write(&tmp, b"x").unwrap();
+        assert!(verify_protected_permissions(&tmp).is_err(), "user temp files are user-writable");
+        let _ = std::fs::remove_file(&tmp);
+        let installed = Path::new(r"C:\Program Files\Lanes\lanes.exe");
+        if installed.exists() {
+            verify_protected_permissions(installed).expect("installed Lanes is admin-only");
+        }
+    }
+
 
     /// Regression: task_exists on a thread without COM (like Tauri's main
     /// thread at startup) released the task after uninitializing COM and

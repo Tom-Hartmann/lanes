@@ -170,6 +170,20 @@ same certificate across releases and signing every file both help. Microsoft no 
 instant reputation, so expect warnings on the first releases whichever certificate type you use.
 
 
+## Admin mode does not need a signature
+
+Admin mode registers a scheduled task that starts `lanes.exe` elevated. What
+keeps that safe is that the exe cannot be swapped by a program without admin
+rights, so before creating the task Lanes checks that
+
+1. `lanes.exe` is under Program Files, and
+2. the exe and its folder are owned and writable only by SYSTEM,
+   Administrators or TrustedInstaller (the real ACLs are read).
+
+A signature is optional: an unsigned or self-signed build is accepted, a
+present-but-broken signature (tampered file) is refused. Signing still helps
+with SmartScreen and antivirus reputation.
+
 ## Signed GitHub releases
 
 GitHub's build machines cannot use the local dev certificate: its private key

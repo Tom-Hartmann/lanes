@@ -124,7 +124,8 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 - [x] Code signing with the dev certificate (`scripts/new-dev-cert.ps1`, `docs/SIGNING.md`): exe, DLLs and installer signed + timestamped
 - [x] Admin mode on: one UAC prompt, badge shows Admin after restart
 - [x] Admin mode on + normal start (Start menu): hands over to the elevated instance, no UAC prompt, one instance
-- [x] Unsigned build: admin mode refuses with a clear message
+- [ ] Unsigned build (GitHub release): admin mode works (location + admin-only permissions check)
+- [x] Permission check: installed Program Files\Lanes passes, user-writable files are refused (test)
 - [ ] Admin mode + Start with Windows: starts elevated at logon without a prompt
 - [x] Elevated start through the task ("Restart as administrator" / logon trigger): no UAC prompt
 - [ ] Admin mode off / uninstall: the scheduled task is removed
