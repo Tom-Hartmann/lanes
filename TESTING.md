@@ -123,7 +123,8 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 - [ ] Installer on this PC: installs to Program Files, Start menu entry, starts, uninstall cleans up
 - [ ] Installer on a clean PC without dev tools (WebView2 bootstrapper if missing)
 - [ ] Portable ZIP on a clean PC
-- [ ] GitHub "Release" workflow: tag `vX.Y.Z` publishes installer + portable ZIP
+- [x] GitHub "Release" workflow: tag `vX.Y.Z` publishes installer + portable ZIP (v0.1.0)
+- [x] GitHub "CI" workflow: clippy, tests and UI typecheck pass on windows-latest
 - [ ] Signed release build (`LANES_SIGN_*` secrets, see docs/SIGNING.md)
 
 ## Performance
