@@ -1,0 +1,14 @@
+{
+  "name": "lanes",
+  "private": true,
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri",
+    "typecheck": "pnpm --filter lanes-ui typecheck",
+    "sign:dlls": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sign.ps1 -Path third_party/ffmpeg/bin"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "mode": "thumbprint",
+  "thumbprint": "0123456789ABCDEF0123456789ABCDEF01234567",
+  "timestampUrl": "http://timestamp.digicert.com",
+  "dlibPath": "C:\\tools\\Microsoft.Trusted.Signing.Client\\bin\\x64\\Azure.CodeSigning.Dlib.dll",
+  "metadataPath": "C:\\tools\\trusted-signing-metadata.json"
+}

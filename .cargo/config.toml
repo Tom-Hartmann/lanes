@@ -1,0 +1,5 @@
+# Build-time locations of native dependencies.
+# third_party/ffmpeg is the BtbN "gpl-shared" FFmpeg 9.0 build (see docs/BUILDING.md).
+[env]
+FFMPEG_DIR = { value = "third_party/ffmpeg", relative = true }
+LIBCLANG_PATH = 'C:\Program Files\LLVM\bin'

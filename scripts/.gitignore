@@ -1,0 +1,3 @@
+# Local signing configuration and the exported dev certificate (see docs/SIGNING.md).
+signing.json
+*.cer

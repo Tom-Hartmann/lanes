@@ -1,0 +1,39 @@
+[package]
+name = "lanes-app"
+description = "Lanes desktop shell: Tauri commands/events, tray and global hotkeys."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "lanes_app_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "lanes"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+lanes-core.workspace = true
+lanes-platform.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
+tauri-plugin-notification = "2"
+# Lanes is Windows-only; the app crate uses Win32 directly.
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
