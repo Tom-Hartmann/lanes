@@ -63,7 +63,7 @@ Every source on its own track, so you can edit them separately later.
 
 ### Clips library
 - Thumbnails, search and filters
-- Play, trim losslessly, convert to MP4
+- Play with slow motion (down to 0.1x) and keyboard controls (? shows them), trim losslessly, convert to MP4
 - Share: one-click copy with your lanes mixed into one track and sized for Discord; drag it out, copy it (Ctrl+V in Discord) or send it to a Discord channel via webhook
 - Delete to the recycle bin, or show the file in its folder
 

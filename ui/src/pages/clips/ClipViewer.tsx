@@ -18,6 +18,45 @@ interface Props {
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
+const SPEEDS = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2];
+const SPEED_KEY = "lanes.playbackSpeed";
+const FRAME = 1 / 60;
+
+function loadSpeed(): number {
+  try {
+    const v = Number(localStorage.getItem(SPEED_KEY));
+    return SPEEDS.includes(v) ? v : 1;
+  } catch {
+    return 1;
+  }
+}
+
+function saveSpeed(v: number) {
+  try {
+    localStorage.setItem(SPEED_KEY, String(v));
+  } catch {
+    // Storage unavailable: the speed is just not remembered.
+  }
+}
+
+const SHORTCUTS: [string, string][] = [
+  ["Space / K", "Play / pause"],
+  ["← / →", "Back / forward 1 s (Shift: 5 s)"],
+  ["J / L", "Back / forward 5 s (Shift: 10 s)"],
+  [", / .", "Previous / next frame"],
+  ["S", "Slow motion on/off (0.25×)"],
+  ["[ / ]", "Slower / faster"],
+  ["Home / End, 0–9", "Jump to start / end / 0–90 %"],
+  ["I / O", "Set trim start / end at the playhead"],
+  ["P", "Preview the trim selection"],
+  ["M / F", "Mute / fullscreen"],
+  ["?", "Show / hide these shortcuts"],
+  ["Esc", "Close"],
+];
+
+const isTyping = (t: EventTarget | null) =>
+  t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
+
 export function ClipViewer({ clip, onClose, onChanged }: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const [src, setSrc] = useState<string | null>(null);
@@ -27,6 +66,14 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
   const [playhead, setPlayhead] = useState(0);
   const [busy, setBusy] = useState<"trim" | "remux" | null>(null);
   const previewEnd = useRef<number | null>(null);
+  const [speed, setSpeedState] = useState(loadSpeed);
+  const [help, setHelp] = useState(false);
+  const [flash, setFlash] = useState<{ text: string; id: number } | null>(null);
+  const setSpeed = (v: number) => {
+    setSpeedState(v);
+    saveSpeed(v);
+  };
+  const show = (text: string) => setFlash({ text, id: Date.now() });
 
   useEffect(() => {
     let alive = true;
@@ -39,11 +86,19 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
     };
   }, [clip.path]);
 
+  // Apply the playback speed; keep the audio pitch natural in slow motion.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    const v = video.current;
+    if (!v) return;
+    v.preservesPitch = true;
+    v.playbackRate = speed;
+  }, [speed, src]);
+
+  useEffect(() => {
+    if (!flash) return;
+    const t = window.setTimeout(() => setFlash(null), 700);
+    return () => window.clearTimeout(t);
+  }, [flash]);
 
   const [start, end] = range;
   const seek = (t: number) => {
@@ -57,6 +112,127 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
     v.currentTime = start;
     void v.play();
   };
+
+  // Keyboard controls. Capture phase, so the native <video> controls do not
+  // also react to the same keys; ignored while typing in a field.
+  const keys = useRef<(e: KeyboardEvent) => void>(() => {});
+  keys.current = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      if (help) setHelp(false);
+      else onClose();
+      return;
+    }
+    if (isTyping(e.target) || e.ctrlKey || e.altKey || e.metaKey) return;
+    const v = video.current;
+    const nudge = (d: number) => {
+      if (!v) return;
+      seek(Math.min(Math.max(v.currentTime + d, 0), duration || v.duration || 0));
+      show(Math.abs(d) < 1 ? (d > 0 ? "+1 frame" : "−1 frame") : `${d > 0 ? "+" : "−"}${Math.abs(d)} s`);
+    };
+    const step = (dir: 1 | -1) => {
+      const i = SPEEDS.indexOf(speed);
+      const next = SPEEDS[Math.min(Math.max((i < 0 ? 4 : i) + dir, 0), SPEEDS.length - 1)];
+      setSpeed(next);
+      show(`${next}×`);
+    };
+    let handled = true;
+    switch (e.key) {
+      case " ":
+      case "k":
+      case "K":
+        if (v) {
+          if (v.paused) void v.play();
+          else v.pause();
+          show(v.paused ? "Pause" : "Play");
+        }
+        break;
+      case "ArrowLeft":
+        nudge(e.shiftKey ? -5 : -1);
+        break;
+      case "ArrowRight":
+        nudge(e.shiftKey ? 5 : 1);
+        break;
+      case "j":
+      case "J":
+        nudge(e.shiftKey ? -10 : -5);
+        break;
+      case "l":
+      case "L":
+        nudge(e.shiftKey ? 10 : 5);
+        break;
+      case ",":
+        v?.pause();
+        nudge(-FRAME);
+        break;
+      case ".":
+        v?.pause();
+        nudge(FRAME);
+        break;
+      case "s":
+      case "S": {
+        const next = speed === 1 ? 0.25 : 1;
+        setSpeed(next);
+        show(next === 1 ? "Normal speed" : "Slow motion 0.25×");
+        break;
+      }
+      case "[":
+      case "-":
+        step(-1);
+        break;
+      case "]":
+      case "+":
+      case "=":
+        step(1);
+        break;
+      case "Home":
+        seek(0);
+        break;
+      case "End":
+        seek(duration);
+        break;
+      case "i":
+      case "I":
+        setRange([Math.min(playhead, end - 0.5), end]);
+        show("Trim start");
+        break;
+      case "o":
+      case "O":
+        setRange([start, Math.max(playhead, start + 0.5)]);
+        show("Trim end");
+        break;
+      case "p":
+      case "P":
+        preview();
+        break;
+      case "m":
+      case "M":
+        if (v) {
+          v.muted = !v.muted;
+          show(v.muted ? "Muted" : "Sound on");
+        }
+        break;
+      case "f":
+      case "F":
+        if (document.fullscreenElement) void document.exitFullscreen();
+        else void v?.requestFullscreen();
+        break;
+      case "?":
+        setHelp((h) => !h);
+        break;
+      default:
+        if (/^[0-9]$/.test(e.key) && duration > 0) seek((Number(e.key) / 10) * duration);
+        else handled = false;
+    }
+    if (handled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keys.current(e);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
 
   const trim = async () => {
     setBusy("trim");
@@ -108,7 +284,29 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="flex aspect-video max-h-[55vh] w-full items-center justify-center bg-black">
+          <div className="relative flex aspect-video max-h-[55vh] w-full items-center justify-center bg-black">
+            {flash && (
+              <div
+                key={flash.id}
+                className="pointer-events-none absolute top-3 left-1/2 z-10 -translate-x-1/2 rounded-md bg-black/70 px-3 py-1 font-mono text-sm text-white"
+              >
+                {flash.text}
+              </div>
+            )}
+            {help && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/80 p-4" onPointerDown={() => setHelp(false)}>
+                <table className="text-sm">
+                  <tbody>
+                    {SHORTCUTS.map(([k, what]) => (
+                      <tr key={k}>
+                        <td className="py-0.5 pr-6 text-right font-mono text-sky-300">{k}</td>
+                        <td className="py-0.5 text-zinc-200">{what}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
             {loadError ? (
               <p className="px-6 text-center text-sm text-red-400">Cannot play this file: {loadError}</p>
             ) : !src ? (
@@ -140,6 +338,25 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
                 onSeeking={() => (previewEnd.current = null)}
               />
             )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1 border-b border-zinc-800 px-4 py-2 text-xs">
+            <span className="mr-1 text-zinc-500">Speed</span>
+            {SPEEDS.map((x) => (
+              <button
+                key={x}
+                onClick={() => setSpeed(x)}
+                className={`rounded px-2 py-0.5 font-mono ${
+                  speed === x ? "bg-sky-600 text-white" : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                }`}
+              >
+                {x}×
+              </button>
+            ))}
+            {speed < 1 && <span className="ml-2 text-sky-400">slow motion</span>}
+            <button onClick={() => setHelp((h) => !h)} className="ml-auto text-zinc-500 hover:text-zinc-200" title="Keyboard shortcuts">
+              Shortcuts <kbd className="rounded border border-zinc-700 px-1 font-mono">?</kbd>
+            </button>
           </div>
 
           <div className="space-y-3 p-4">

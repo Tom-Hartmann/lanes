@@ -100,6 +100,8 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 - [ ] Delete goes to the recycle bin
 - [ ] Show in folder / open output folder
 - [ ] Search and the clip/recording filter
+- [ ] Slow motion: speed bar 0.1x-2x, pitch stays natural, speed remembered
+- [ ] Keyboard: Space/K, arrows, J/L, frame step , and ., S slow-mo, [ ], 0-9, I/O trim, P preview, M, F, ? legend
 
 ## Sharing
 
