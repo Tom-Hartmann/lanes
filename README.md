@@ -35,7 +35,7 @@ Save the play that just happened.
 - Instant clips that always start cleanly on a keyframe
 - Several clip hotkeys, e.g. 30 s and 2 min
 - Per preset: lanes, quality, folder and filename
-- A sound and a notification on save, without leaving the game
+- Feedback on save that never steals focus: a chime on the output device you pick, an on-screen notice in a corner with your own text, and/or a Windows notification, each with a Test button
 
 ### Audio lanes
 Every source on its own track, so you can edit them separately later.

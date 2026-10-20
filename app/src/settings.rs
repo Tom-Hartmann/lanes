@@ -56,7 +56,26 @@ pub struct General {
     /// Run elevated via the scheduled task (see `lanes_platform::admin`).
     pub run_as_admin: bool,
     pub clip_sound: bool,
+    /// Output device for the clip sound; `None` = Windows default output.
+    pub clip_sound_device: Option<String>,
+    /// 0-100.
+    pub clip_sound_volume: u8,
     pub clip_toast: bool,
+    /// A small on-screen notice (no focus change) when a clip is saved.
+    pub clip_overlay: bool,
+    pub clip_overlay_corner: OverlayCorner,
+    /// Placeholders: {preset} {duration} {game}.
+    pub clip_overlay_text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum OverlayCorner {
+    TopLeft,
+    #[default]
+    TopRight,
+    BottomLeft,
+    BottomRight,
 }
 
 impl Default for General {
@@ -69,7 +88,12 @@ impl Default for General {
             autostart_delay_secs: 10,
             run_as_admin: false,
             clip_sound: true,
-            clip_toast: true,
+            clip_sound_device: None,
+            clip_sound_volume: 70,
+            clip_toast: false,
+            clip_overlay: true,
+            clip_overlay_corner: OverlayCorner::TopRight,
+            clip_overlay_text: "Clip saved · {preset} · {duration} s".into(),
         }
     }
 }

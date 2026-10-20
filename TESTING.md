@@ -56,7 +56,10 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 
 - [x] Save clip via hotkeys (Ctrl+Shift+F10 / F12) — with the game unfocused; in-game focus not yet tested
 - [x] Toggle replay via hotkey (Ctrl+Shift+F11) — tray not yet tested
-- [ ] Clip sound and Windows notification (game keeps focus)
+- [ ] Clip sound: chime on the chosen output device at the chosen volume (Settings → Test)
+- [ ] On-screen notice: chosen corner, custom text with {preset} {duration} {game}, click-through, game keeps focus (Settings → Test)
+- [ ] Windows notification (Settings → Test)
+- [ ] Multi-monitor save gives one sound / one notice, not one per file
 - [x] Preset with a lane subset, own folder and own filename template
 - [x] Quality preset Medium (background re-encode on NVENC)
 - [x] Disk-backed replay buffer
@@ -108,11 +111,13 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 ## Admin mode & autostart
 
 - [ ] Start with Windows (normal mode): starts minimized after the delay, optional replay/profile
-- [ ] Installer: installs to Program Files, uninstall removes everything
-- [ ] Code signing with the dev certificate (`scripts/new-dev-cert.ps1`, `docs/SIGNING.md`)
-- [ ] Admin mode on: one UAC prompt, badge shows Admin after restart
+- [x] Installer: installs to Program Files (all users) and upgrades in place (uninstall not yet tested)
+- [x] Code signing with the dev certificate (`scripts/new-dev-cert.ps1`, `docs/SIGNING.md`): exe, DLLs and installer signed + timestamped
+- [x] Admin mode on: one UAC prompt, badge shows Admin after restart
+- [x] Admin mode on + normal start (Start menu): hands over to the elevated instance, no UAC prompt, one instance
+- [x] Unsigned build: admin mode refuses with a clear message
 - [ ] Admin mode + Start with Windows: starts elevated at logon without a prompt
-- [ ] Tray "Restart as administrator": no UAC prompt
+- [x] Elevated start through the task ("Restart as administrator" / logon trigger): no UAC prompt
 - [ ] Admin mode off / uninstall: the scheduled task is removed
 - [ ] Hotkeys and per-app audio with a game running as administrator
 
@@ -120,7 +125,7 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 
 - [x] Portable ZIP: unzipped to a fresh folder, starts and captures (Lanes.exe + 4 FFmpeg DLLs)
 - [x] lanes.exe needs no Visual C++ runtime (static CRT; only Windows DLLs + FFmpeg)
-- [ ] Installer on this PC: installs to Program Files, Start menu entry, starts, uninstall cleans up
+- [x] Installer on this PC: installs to Program Files, starts (uninstall not yet tested)
 - [ ] Installer on a clean PC without dev tools (WebView2 bootstrapper if missing)
 - [ ] Portable ZIP on a clean PC
 - [x] GitHub "Release" workflow: tag `vX.Y.Z` publishes installer + portable ZIP (v0.1.0)

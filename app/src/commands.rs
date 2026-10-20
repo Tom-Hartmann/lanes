@@ -41,6 +41,26 @@ pub fn get_app_info(state: State<'_, AppState>) -> AppInfo {
     state.info()
 }
 
+/// Tries one kind of clip-saved feedback with the current settings.
+#[tauri::command]
+pub fn test_clip_feedback(app: AppHandle, state: State<'_, AppState>, kind: String) -> CmdResult<()> {
+    let s = state.settings();
+    let game = state.status().and_then(|st| st.game);
+    let clip = crate::feedback::ClipInfo {
+        preset: s.clip_presets.first().map_or("Test", |p| p.name.as_str()),
+        secs: f64::from(s.clip_presets.first().map_or(30, |p| p.length_secs)),
+        game: game.as_ref().map(|g| g.name.as_str()),
+        near: game.as_ref().and_then(|g| g.hwnd),
+    };
+    match kind.as_str() {
+        "sound" => crate::feedback::sound(&s),
+        "overlay" => crate::feedback::notice(&s, &clip),
+        "toast" => crate::feedback::toast(&app, &clip),
+        other => return Err(format!("unknown feedback kind \"{other}\"")),
+    }
+    Ok(())
+}
+
 /// Uncaught UI errors are forwarded here so they end up in the same log.
 #[tauri::command]
 pub fn ui_log(level: String, message: String) {

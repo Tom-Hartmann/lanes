@@ -134,7 +134,7 @@ struct Stream {
 }
 
 /// 48 kHz, stereo, 32-bit float.
-fn float_format() -> WAVEFORMATEXTENSIBLE {
+pub(crate) fn float_format() -> WAVEFORMATEXTENSIBLE {
     WAVEFORMATEXTENSIBLE {
         Format: WAVEFORMATEX {
             wFormatTag: WAVE_FORMAT_EXTENSIBLE as u16,
@@ -236,7 +236,7 @@ impl Stream {
     }
 }
 
-fn activate_endpoint(device: Option<&str>, render: bool) -> Result<(IAudioClient, String)> {
+pub(crate) fn activate_endpoint(device: Option<&str>, render: bool) -> Result<(IAudioClient, String)> {
     // SAFETY: COM is initialised on this thread (ComGuard); interfaces are owned.
     unsafe {
         let enumerator: IMMDeviceEnumerator =

@@ -231,7 +231,17 @@ impl EventSink for TauriSink {
         log::info!("clip saved: {} ({:.1} s)", clip.path, clip.duration_secs);
         let _ = self.app.emit("clip_saved", clip);
         let preset = s.clip_presets.iter().find(|p| p.id == clip.preset).map_or(clip.preset.as_str(), |p| p.name.as_str()).to_string();
-        crate::feedback::clip_saved(&self.app, &s, &preset, clip.duration_secs);
+        let game = state.status().and_then(|st| st.game);
+        crate::feedback::clip_saved(
+            &self.app,
+            &s,
+            &crate::feedback::ClipInfo {
+                preset: &preset,
+                secs: clip.duration_secs,
+                game: game.as_ref().map(|g| g.name.as_str()),
+                near: game.as_ref().and_then(|g| g.hwnd),
+            },
+        );
     }
 
     fn recording_saved(&self, paths: &[PathBuf]) {

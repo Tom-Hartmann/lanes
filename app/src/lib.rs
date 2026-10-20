@@ -10,6 +10,7 @@ mod hotkeys;
 mod instance;
 mod library;
 mod logbus;
+mod overlay;
 mod settings;
 mod state;
 mod tray;
@@ -134,6 +135,7 @@ pub fn run() {
             commands::get_app_info,
             commands::get_logs,
             commands::ui_log,
+            commands::test_clip_feedback,
             commands::get_settings,
             commands::update_settings,
             commands::activate_profile,

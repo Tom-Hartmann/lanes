@@ -111,6 +111,8 @@ export interface HotkeySetting {
   backend: HotkeyBackend;
 }
 
+export type OverlayCorner = "topLeft" | "topRight" | "bottomLeft" | "bottomRight";
+
 export interface Profile {
   id: Id;
   name: string;
@@ -136,7 +138,16 @@ export interface Settings {
     autostartDelaySecs: number;
     runAsAdmin: boolean;
     clipSound: boolean;
+    /** Output device id; null = Windows default output. */
+    clipSoundDevice: string | null;
+    /** 0–100 */
+    clipSoundVolume: number;
     clipToast: boolean;
+    /** Small on-screen notice that never takes focus. */
+    clipOverlay: boolean;
+    clipOverlayCorner: OverlayCorner;
+    /** Placeholders: {preset} {duration} {game} */
+    clipOverlayText: string;
   };
   output: {
     folder: string;
@@ -326,6 +337,8 @@ export interface EngineError {
 export const api = {
   getAppInfo: () => invoke<AppInfo>("get_app_info"),
   getLogs: () => invoke<LogEntry[]>("get_logs"),
+  /** Tries one clip-saved feedback with the current settings (sound, on-screen notice, Windows notification). */
+  testClipFeedback: (kind: "sound" | "overlay" | "toast") => invoke<void>("test_clip_feedback", { kind }),
 
   getSettings: () => invoke<Settings>("get_settings"),
   /** Validates, persists and applies. Returns the stored (possibly repaired) settings. */

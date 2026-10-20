@@ -1,5 +1,6 @@
 //! Audio: WASAPI capture, the lane mixer and DSP.
 
+pub mod chime;
 pub mod devices;
 pub mod dsp;
 pub mod mixer;
