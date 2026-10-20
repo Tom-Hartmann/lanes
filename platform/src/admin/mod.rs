@@ -152,13 +152,25 @@ fn run_helper_elevated(exe: &Path, command: &Command) -> Result<(), AdminError> 
 /// True if the task is registered and visible to the caller. Works non-elevated
 /// because the task grants the user read access.
 pub fn task_exists() -> bool {
-    match Scheduler::connect().and_then(|s| s.task(TASK_FOLDER, TASK_NAME)) {
+    // The scheduler owns the COM initialization, so it must outlive every
+    // interface obtained from it. (Dropping it inside a closure while the task
+    // was still alive crashed Lanes at startup on Tauri's main thread.)
+    let scheduler = match Scheduler::connect() {
+        Ok(s) => s,
+        Err(e) => {
+            log::debug!("connecting to Task Scheduler: {e}");
+            return false;
+        }
+    };
+    let exists = match scheduler.task(TASK_FOLDER, TASK_NAME) {
         Ok(task) => task.is_some(),
         Err(e) => {
             log::debug!("looking up {TASK_FOLDER}\\{TASK_NAME}: {e}");
             false
         }
-    }
+    };
+    drop(scheduler);
+    exists
 }
 
 /// Starts the task now (`IRegisteredTask::Run`). No UAC prompt: the task's
@@ -423,6 +435,17 @@ fn task_sddl(user_sid: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Regression: task_exists on a thread without COM (like Tauri's main
+    /// thread at startup) released the task after uninitializing COM and
+    /// crashed with an access violation when the task existed.
+    #[test]
+    fn task_exists_is_safe_on_a_thread_without_com() {
+        let t = std::thread::spawn(|| (0..3).map(|_| task_exists()).collect::<Vec<_>>());
+        let results = t.join().expect("no crash or panic");
+        assert!(results.windows(2).all(|w| w[0] == w[1]));
+    }
+
     use super::*;
 
     fn args(s: &str) -> Vec<String> {

@@ -34,18 +34,27 @@ struct Launch {
     autostart: bool,
     from_task: bool,
     show_requested: bool,
+    /// Started by a normal launch handing over in admin mode: nothing is
+    /// exiting, so there is no need to wait for the single-instance lock.
+    handoff: bool,
     minimized_flag: bool,
 }
 
 impl Launch {
     fn from_args(args: &[String]) -> Self {
         let has = |a: &str| args.iter().any(|x| x == a);
-        let show_requested = std::fs::remove_file(show_marker()).is_ok();
+        // The marker says why we were started: "handoff" (normal launch in
+        // admin mode) or empty ("Restart as administrator").
+        let marker = std::fs::read(show_marker()).ok();
+        let _ = std::fs::remove_file(show_marker());
+        let show_requested = marker.is_some();
+        let handoff = marker.as_deref() == Some(&b"handoff"[..]);
         let from_task = has(admin::FROM_TASK_ARG);
         Self {
             autostart: has(autostart::AUTOSTART_ARG) || (from_task && !show_requested),
             from_task,
             show_requested,
+            handoff,
             minimized_flag: has("--minimized"),
         }
     }
@@ -62,9 +71,34 @@ pub fn run() {
     }
     let launch = Launch::from_args(&args);
 
+    // Admin mode: a normal start hands over to the elevated scheduled task (no
+    // UAC prompt) instead of running an unelevated Lanes. If Lanes is already
+    // running, the elevated starter finds the lock taken and just shows it.
+    if !launch.from_task && !instance::is_elevated() {
+        let wants_admin = settings::Store::new(&settings::config_dir()).load().general.run_as_admin;
+        if wants_admin && admin::task_exists() {
+            let show = !launch.autostart && !launch.minimized_flag;
+            if show {
+                let _ = std::fs::create_dir_all(state::local_data_dir());
+                let _ = std::fs::write(show_marker(), b"handoff");
+            }
+            match admin::run_task() {
+                Ok(()) => {
+                    log::info!("admin mode: handing over to the elevated instance");
+                    return;
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(show_marker());
+                    log::error!("admin mode: could not start the elevated task ({e}); running without admin rights");
+                }
+            }
+        }
+    }
+
     // An elevated instance started by "Restart as administrator" may race the
     // exiting standard instance for the lock: retry briefly.
-    let deadline = Instant::now() + if launch.from_task { Duration::from_secs(10) } else { Duration::ZERO };
+    let wait = launch.from_task && !launch.handoff;
+    let deadline = Instant::now() + if wait { Duration::from_secs(10) } else { Duration::ZERO };
     let lock = loop {
         match instance::acquire() {
             Ok(instance::Acquire::Primary(lock)) => break Some(lock),

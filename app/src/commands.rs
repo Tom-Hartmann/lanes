@@ -347,9 +347,9 @@ pub async fn set_run_as_admin(app: AppHandle, enabled: bool) -> CmdResult<AppInf
         if enabled {
             let opts = admin::TaskOptions { logon_trigger: s.general.start_with_windows, delay_secs: s.general.autostart_delay_secs };
             let result = if state.elevated {
-                std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| admin::install_task(&exe, &opts).map_err(err))
+                std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| admin::install_task(&exe, &opts).map_err(admin_error))
             } else {
-                admin::install_via_uac(&opts).map_err(err)
+                admin::install_via_uac(&opts).map_err(admin_error)
             };
             result.map_err(|e| format!("could not set up admin mode: {e}"))?;
         } else {
@@ -364,6 +364,16 @@ pub async fn set_run_as_admin(app: AppHandle, enabled: bool) -> CmdResult<AppInf
         Ok(state.info())
     })
     .await
+}
+
+/// Explains admin-mode failures in user terms.
+fn admin_error(e: admin::AdminError) -> String {
+    match e {
+        admin::AdminError::Unsigned(_) => "this Lanes build is not code-signed. Admin mode only runs a signed Lanes, so             that a swapped exe can never get administrator rights. Install a signed build (see docs/SIGNING.md)."
+            .into(),
+        admin::AdminError::Cancelled => "the Windows confirmation (UAC) was cancelled".into(),
+        other => other.to_string(),
+    }
 }
 
 #[tauri::command]
