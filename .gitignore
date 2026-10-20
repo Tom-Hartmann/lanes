@@ -6,3 +6,6 @@ node_modules/
 /third_party/*
 !/third_party/README.md
 *.tsbuildinfo
+
+# Conflict copies made by Synology Drive / sync tools
+*(# Name clash*
