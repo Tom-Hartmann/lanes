@@ -116,6 +116,16 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 - [ ] Admin mode off / uninstall: the scheduled task is removed
 - [ ] Hotkeys and per-app audio with a game running as administrator
 
+## Installer & releases
+
+- [x] Portable ZIP: unzipped to a fresh folder, starts and captures (Lanes.exe + 4 FFmpeg DLLs)
+- [x] lanes.exe needs no Visual C++ runtime (static CRT; only Windows DLLs + FFmpeg)
+- [ ] Installer on this PC: installs to Program Files, Start menu entry, starts, uninstall cleans up
+- [ ] Installer on a clean PC without dev tools (WebView2 bootstrapper if missing)
+- [ ] Portable ZIP on a clean PC
+- [ ] GitHub "Release" workflow: tag `vX.Y.Z` publishes installer + portable ZIP
+- [ ] Signed release build (`LANES_SIGN_*` secrets, see docs/SIGNING.md)
+
 ## Performance
 
 - [ ] PresentMon frame time with and without Lanes in a real game (`docs/PERFORMANCE.md`)

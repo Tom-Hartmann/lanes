@@ -6,9 +6,11 @@
     "build": "tauri build",
     "tauri": "tauri",
     "typecheck": "pnpm --filter lanes-ui typecheck",
-    "sign:dlls": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sign.ps1 -Path third_party/ffmpeg/bin"
+    "sign:dlls": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sign.ps1 -Path third_party/ffmpeg/bin",
+    "package:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-portable.ps1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
-  }
+  },
+  "packageManager": "pnpm@12.9.1"
 }

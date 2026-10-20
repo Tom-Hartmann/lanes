@@ -3,3 +3,9 @@
 [env]
 FFMPEG_DIR = { value = "third_party/ffmpeg", relative = true }
 LIBCLANG_PATH = 'C:\Program Files\LLVM\bin'
+
+# Link the C runtime statically: lanes.exe then needs no Visual C++
+# Redistributable on the target PC (the FFmpeg DLLs are MinGW builds and
+# bring their own runtime).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

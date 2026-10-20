@@ -3,7 +3,9 @@
 Lightweight game capture and clipping for Windows 10/11, with every audio source on its own
 lane. Rust backend, React UI, Tauri v2.
 
-Test status per feature: [TESTING.md](TESTING.md).
+**Download:** [latest release](../../releases/latest): `Lanes_*_x64-setup.exe` (installer) or
+`Lanes_*_x64-portable.zip` (no install). Windows 10/11 x64. Test status per feature:
+[TESTING.md](TESTING.md).
 
 ## Features
 
@@ -105,8 +107,25 @@ cargo test -p lanes-core --test live_session -- --ignored --nocapture   # real c
 pnpm build                                  # release + per-machine NSIS installer
 ```
 
-The installer is unsigned until you configure signing (`docs/SIGNING.md`); the build prints a warning
-for each unsigned file.
+`pnpm package:portable` then packs `target/release/lanes.exe` and the FFmpeg DLLs into
+`target/release/bundle/portable/*.zip`. The installer is unsigned until you configure signing
+(`docs/SIGNING.md`); the build prints a warning for each unsigned file.
+
+## Releases (GitHub Actions)
+
+- **CI** (`.github/workflows/ci.yml`): every push to `main` and every pull request runs clippy,
+  the tests and the UI typecheck on Windows.
+- **Release** (`.github/workflows/release.yml`): pushing a tag builds the installer and the portable
+  ZIP and publishes them as a GitHub Release:
+
+  ```sh
+  git tag v0.2.0
+  git push origin v0.2.0
+  ```
+
+  The version is taken from the tag. "Run workflow" on the Actions tab builds the same files
+  without publishing (they appear as build artifacts). Repository variable `FFMPEG_LICENSE`
+  (`gpl` default, or `lgpl`) picks the FFmpeg build; secrets `LANES_SIGN_*` enable code signing.
 
 ## Runtime model
 

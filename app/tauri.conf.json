@@ -34,6 +34,10 @@
       "nsis": {
         "installMode": "perMachine",
         "installerHooks": "./installer-hooks.nsh"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
       }
     },
     "icon": [
@@ -43,7 +47,11 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../third_party/ffmpeg/bin/*.dll": "./"
+      "../third_party/ffmpeg/bin/avcodec-63.dll": "./",
+      "../third_party/ffmpeg/bin/avformat-63.dll": "./",
+      "../third_party/ffmpeg/bin/avutil-61.dll": "./",
+      "../third_party/ffmpeg/bin/swresample-7.dll": "./",
+      "../third_party/ffmpeg/LICENSE.txt": "FFmpeg-LICENSE.txt"
     }
   }
 }
