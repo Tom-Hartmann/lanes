@@ -42,6 +42,8 @@ pub struct AudioSession {
     chunks: Sender<Chunk>,
     sources: HashMap<String, RunningSource>,
     on_status: StatusCallback,
+    /// Sources currently reported as "not running", so the notice is sent once.
+    waiting: std::collections::HashSet<String>,
     mixer_cmd: Sender<MixerCommand>,
     mixer: Option<JoinHandle<Option<()>>>,
     encoder: Option<JoinHandle<Option<()>>>,
@@ -88,6 +90,7 @@ impl AudioSession {
             chunks,
             sources: HashMap::new(),
             on_status,
+            waiting: std::collections::HashSet::new(),
             mixer_cmd,
             mixer: Some(mixer),
             encoder: Some(encoder),
@@ -117,9 +120,12 @@ impl AudioSession {
         self.sources.retain(|id, running| wanted.get(id).is_some_and(|w| w.as_ref() == Some(&running.spec)));
         for (id, spec) in wanted {
             let Some(spec) = spec else {
-                (self.on_status)(&id, CaptureStatus::Waiting { reason: "application is not running".into() });
+                if self.waiting.insert(id.clone()) {
+                    (self.on_status)(&id, CaptureStatus::Waiting { reason: "application is not running".into() });
+                }
                 continue;
             };
+            self.waiting.remove(&id);
             if self.sources.contains_key(&id) {
                 continue;
             }

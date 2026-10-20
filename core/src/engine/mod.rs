@@ -250,6 +250,8 @@ struct Session {
     router: Router,
     targets: Vec<String>,
     encoder_label: String,
+    /// The backend/codec actually used (after resolving Auto and fallbacks).
+    encoder_choice: (crate::config::EncoderBackend, VideoCodec),
     _watcher: Option<DeviceWatcher>,
     /// Stats deltas.
     last_frames: u64,
@@ -481,6 +483,7 @@ impl Control {
         let encoder_label = video.first().map(|v| v.encoder_label.clone()).unwrap_or_default();
         log::info!("capture session started ({} video stream(s), {} lane(s))", video.len(), self.config.audio.lanes.len());
         Ok(Session {
+            encoder_choice: (backend, codec),
             video,
             audio,
             router,
@@ -571,7 +574,7 @@ impl Control {
                     return fallback();
                 }
                 match v.layout {
-                    MultiMonitorLayout::SeparateFiles => selected
+                    MultiMonitorLayout::SeparateFiles => unique_titles(selected
                         .iter()
                         .enumerate()
                         .map(|(i, (m, cap, max_h))| {
@@ -581,7 +584,7 @@ impl Control {
                             };
                             monitor_plan(i as u8, m, cap.map_or(fps, |c| c.clamp(1, fps)), h)
                         })
-                        .collect(),
+                        .collect()),
                     MultiMonitorLayout::Canvas => vec![canvas_plan(&selected, fps, v.output_height)],
                 }
             }
@@ -657,7 +660,7 @@ impl Control {
         let mut paths = info.files.clone();
         if let Some(s) = &self.session {
             let (reply, rx) = bounded(1);
-            let _ = s.router.commands.send(RouterCommand::StopRecording { reply });
+            let _ = s.router.commands.send(RouterCommand::StopRecording { at: Timestamp::now(), reply });
             if let Ok(p) = rx.recv_timeout(Duration::from_secs(10)) {
                 paths = p;
             }
@@ -755,7 +758,11 @@ impl Control {
         let Some(s) = &self.session else { return };
         let sink = self.sink.clone();
         let quality = preset.quality;
-        let encoder = self.config.encoder.clone();
+        let mut encoder = self.config.encoder.clone();
+        // Re-encode clips with the hardware encoder the session is using, not the CPU.
+        if let Some(s) = &self.session {
+            (encoder.backend, encoder.codec) = s.encoder_choice;
+        }
         let preset_id = preset.id.clone();
         let done: router::ClipDone = Box::new(move |result| match result {
             Ok((paths, duration)) => {
@@ -930,7 +937,8 @@ impl Control {
             dropped_frames: dropped,
             duplicated_frames: dup,
             encode_ms_avg: encode_ms,
-            encoder_load: encode_ms * streams / budget_ms,
+            // Each stream encodes on its own thread with its own frame budget.
+            encoder_load: encode_ms / budget_ms,
             encoder_queue: s.router.stats.queued.load(Ordering::Relaxed),
             buffer_secs: s.router.stats.replay_ms.load(Ordering::Relaxed) as f64 / 1000.0,
             buffer_bytes: s.router.stats.replay_bytes.load(Ordering::Relaxed),
@@ -970,6 +978,24 @@ impl Control {
         *self.status.lock().unwrap_or_else(|e| e.into_inner()) = status.clone();
         self.sink.status(&status);
     }
+}
+
+/// Gives plans with the same title (two monitors of the same model) distinct
+/// titles, "Name", "Name (2)"..., so their files and labels do not collide.
+fn unique_titles(mut plans: Vec<VideoPlan>) -> Vec<VideoPlan> {
+    for i in 1..plans.len() {
+        let n = plans[..i].iter().filter(|p| p.title == plans[i].title || p.title.starts_with(&format!("{} (", plans[i].title))).count();
+        if n > 0 {
+            let title = format!("{} ({})", plans[i].title, n + 1);
+            for l in &mut plans[i].layers {
+                if let Target::Monitor { name, .. } = &mut l.target {
+                    *name = title.clone();
+                }
+            }
+            plans[i].title = title;
+        }
+    }
+    plans
 }
 
 /// Composes monitors side by side according to their desktop positions,
@@ -1036,8 +1062,7 @@ fn reencode_clip(path: &std::path::Path, quality: ClipQuality, enc: &EncoderSett
     };
     let kbps = ((f64::from(enc.bitrate_kbps) * factor) as u32).max(1500);
     let tmp = path.with_extension(format!("q.{}", path.extension().and_then(|e| e.to_str()).unwrap_or("mp4")));
-    let backend = if enc.backend == crate::config::EncoderBackend::Auto { crate::config::EncoderBackend::X264 } else { enc.backend };
-    match crate::media::transcode(path, &tmp, backend, enc.codec, kbps) {
+    match crate::media::transcode(path, &tmp, enc.backend, enc.codec, kbps) {
         Ok(()) => {
             let _ = std::fs::rename(&tmp, path);
         }
@@ -1084,6 +1109,14 @@ mod tests {
         let p = canvas_plan(&sel, 60, Some(1080));
         assert!(p.width <= 4096 && p.height <= 1080, "{}x{}", p.width, p.height);
         assert!(p.width.is_multiple_of(2) && p.height.is_multiple_of(2));
+    }
+
+    #[test]
+    fn duplicate_monitor_names_get_suffixes() {
+        let plan = |t: &str| VideoPlan { index: 0, title: t.into(), layers: vec![], width: 2, height: 2, fps: 60 };
+        let out = unique_titles(vec![plan("AOC"), plan("Acer"), plan("AOC"), plan("AOC")]);
+        let titles: Vec<_> = out.iter().map(|p| p.title.as_str()).collect();
+        assert_eq!(titles, ["AOC", "Acer", "AOC (2)", "AOC (3)"]);
     }
 
     #[test]

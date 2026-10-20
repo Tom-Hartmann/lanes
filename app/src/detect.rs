@@ -18,7 +18,7 @@ pub fn start(app: AppHandle) {
             std::thread::sleep(POLL);
             let state = app.state::<AppState>();
             let settings = state.settings();
-            let detected = if settings.game_detection.enabled {
+            let mut detected = if settings.game_detection.enabled {
                 let known: Vec<KnownGame> = settings
                     .games
                     .iter()
@@ -29,6 +29,12 @@ pub fn start(app: AppHandle) {
             } else {
                 None
             };
+            // Alt-tabbing out (e.g. into Lanes) must not lose the game: keep it
+            // while its process runs and nothing else was detected.
+            if detected.is_none() && settings.game_detection.enabled
+                && let Some(g) = current.as_ref().filter(|g| games::still_running(g)) {
+                    detected = Some(g.clone());
+                }
             let same = |a: &Option<DetectedGame>, b: &Option<DetectedGame>| {
                 a.as_ref().map(|g| (&g.exe, g.pid, g.hwnd)) == b.as_ref().map(|g| (&g.exe, g.pid, g.hwnd))
             };

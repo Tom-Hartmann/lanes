@@ -29,16 +29,35 @@ struct LogBus {
     app: OnceLock<AppHandle>,
     ring: Mutex<VecDeque<LogEntry>>,
     seq: AtomicU64,
+    /// `%LOCALAPPDATA%\Lanes\lanes.log`, for bug reports.
+    file: Mutex<Option<std::fs::File>>,
 }
 
-static BUS: LogBus = LogBus { app: OnceLock::new(), ring: Mutex::new(VecDeque::new()), seq: AtomicU64::new(0) };
+static BUS: LogBus = LogBus {
+    app: OnceLock::new(),
+    ring: Mutex::new(VecDeque::new()),
+    seq: AtomicU64::new(0),
+    file: Mutex::new(None),
+};
+
+const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 
 /// Installs the logger. Call once, as early as possible.
 pub fn install() {
     let level = if cfg!(debug_assertions) { LevelFilter::Debug } else { LevelFilter::Info };
+    *BUS.file.lock().unwrap_or_else(|e| e.into_inner()) = open_log_file();
     if log::set_logger(&BUS).is_ok() {
         log::set_max_level(level);
     }
+}
+
+/// Opens the log file for appending; starts it over once it passes 5 MB.
+fn open_log_file() -> Option<std::fs::File> {
+    let dir = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)?.join("Lanes");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("lanes.log");
+    let too_big = std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_FILE_BYTES);
+    std::fs::OpenOptions::new().create(true).append(!too_big).write(true).truncate(too_big).open(path).ok()
 }
 
 /// Starts forwarding entries to the UI.
@@ -70,6 +89,10 @@ impl Log for LogBus {
         };
         if cfg!(debug_assertions) {
             eprintln!("[{:<5} {}] {}", entry.level, entry.target, entry.message);
+        }
+        if let Some(f) = self.file.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            use std::io::Write;
+            let _ = writeln!(f, "{} [{:<5} {}] {}", entry.time_ms, entry.level, entry.target, entry.message);
         }
         {
             let mut ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());

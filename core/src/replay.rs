@@ -117,6 +117,9 @@ impl DiskWriter {
     }
 }
 
+/// Where a clip starts for one video stream: its cut keyframe's time.
+pub type StreamCut = (StreamId, Timestamp);
+
 /// A snapshot entry handed to the clip writer thread.
 pub struct ClipPacket(Payload);
 
@@ -206,34 +209,46 @@ impl ReplayBuffer {
     /// The newest GOP is never dropped.
     fn evict(&mut self) {
         let Some(newest) = self.entries.back().map(Payload::time) else { return };
+        let is_kf = |p: &Payload| p.stream() == PRIMARY && p.keyframe();
         loop {
-            let Some(front) = self.entries.front() else { return };
-            let too_old = newest.saturating_since(front.time()) > self.limits.duration;
+            let Some(first_kf) = self.entries.iter().position(is_kf) else { return };
+            let too_old = newest.saturating_since(self.entries[first_kf].time()) > self.limits.duration;
             let too_big = self.bytes > self.limits.max_bytes;
             if !too_old && !too_big {
                 return;
             }
-            // Find the next primary keyframe after the front one.
-            let Some(next_kf) = self.entries.iter().skip(1).position(|p| p.stream() == PRIMARY && p.keyframe()) else {
+            // The next primary keyframe becomes the new start of the buffer.
+            let Some(next_kf) = self.entries.iter().skip(first_kf + 1).position(is_kf).map(|i| i + first_kf + 1) else {
                 return;
             };
             // Keep the window at least `duration` long: only drop the front GOP
             // if what remains still covers the duration (or we are over budget).
-            let next_time = self.entries[next_kf + 1].time();
-            if !too_big && newest.saturating_since(next_time) < self.limits.duration {
+            let cut = self.entries[next_kf].time();
+            if !too_big && newest.saturating_since(cut) < self.limits.duration {
                 return;
             }
-            for _ in 0..=next_kf {
-                if let Some(Payload::Ram(p)) = self.entries.pop_front() {
+            // Drop everything in front of the new start, except audio that
+            // belongs after it: encoders deliver video later than audio, so
+            // audio for the new start often sits in front of its keyframe.
+            let mut keep = Vec::new();
+            for _ in 0..next_kf {
+                let Some(e) = self.entries.pop_front() else { break };
+                if !matches!(e.stream(), StreamId::Video(_)) && e.time() >= cut {
+                    keep.push(e);
+                } else if let Payload::Ram(p) = &e {
                     self.bytes -= p.data.len();
                 }
+            }
+            for e in keep.into_iter().rev() {
+                self.entries.push_front(e);
             }
         }
     }
 
     /// Seconds of video currently buffered.
     pub fn buffered(&self) -> Duration {
-        match (self.entries.front(), self.entries.back()) {
+        let start = self.entries.iter().find(|p| p.stream() == PRIMARY && p.keyframe());
+        match (start, self.entries.back()) {
             (Some(a), Some(b)) => b.time().saturating_since(a.time()),
             _ => Duration::ZERO,
         }
@@ -248,39 +263,48 @@ impl ReplayBuffer {
         self.bytes = 0;
     }
 
-    /// The packets of the last `length` (starting at the latest primary
-    /// keyframe at or before `now - length`), limited to `streams`. Returns
-    /// the cut time and the packets in buffer order.
-    pub fn snapshot(&mut self, now: Timestamp, length: Duration, streams: &[StreamId]) -> Option<(Timestamp, Vec<ClipPacket>)> {
+    /// The packets of the last `length`, limited to `streams`. Every video
+    /// stream gets its own cut: its latest keyframe at or before
+    /// `now - length` (each encoder places keyframes on its own schedule, so
+    /// several monitors never share one cut point). Returns the cut time per
+    /// video stream and the packets in time order.
+    pub fn snapshot(&mut self, now: Timestamp, length: Duration, streams: &[StreamId]) -> Option<(Vec<StreamCut>, Vec<ClipPacket>)> {
         let want = Timestamp(now.0 - (length.as_nanos() / 100) as i64);
-        let mut start_idx = None;
-        for (i, p) in self.entries.iter().enumerate() {
-            if p.stream() == PRIMARY && p.keyframe() {
-                if p.time() <= want || start_idx.is_none() {
-                    start_idx = Some(i);
-                }
-                if p.time() > want {
-                    break;
+        let mut videos: Vec<StreamId> = streams.iter().copied().filter(|s| matches!(s, StreamId::Video(_))).collect();
+        if videos.is_empty() {
+            videos.push(PRIMARY);
+        }
+        // (stream, index of its cut keyframe, cut time)
+        let mut cuts: Vec<(StreamId, usize, Timestamp)> = Vec::new();
+        for &v in &videos {
+            let mut chosen = None;
+            for (i, p) in self.entries.iter().enumerate() {
+                if p.stream() == v && p.keyframe() {
+                    if p.time() <= want || chosen.is_none() {
+                        chosen = Some((i, p.time()));
+                    }
+                    if p.time() > want {
+                        break;
+                    }
                 }
             }
+            if let Some((i, t)) = chosen {
+                cuts.push((v, i, t));
+            }
         }
-        let start_idx = start_idx?;
-        let cut = self.entries[start_idx].time();
+        let earliest = cuts.iter().map(|c| c.2).min()?;
         if let Some(DiskWriter { current: Some((_, f, _)), .. }) = &mut self.disk {
             let _ = f.flush();
         }
-        // Encoders deliver with different latencies (video can lag audio by
-        // hundreds of ms while an encoder warms up), so arrival order is not
-        // time order. Video is taken in arrival order from the cut keyframe;
-        // every other stream is selected by time from anywhere in the buffer.
+        let video_start = |s: StreamId| cuts.iter().find(|c| c.0 == s).map(|c| c.1);
         let mut packets: Vec<ClipPacket> = self
             .entries
             .iter()
             .enumerate()
             .filter(|(i, p)| {
                 let in_window = match p.stream() {
-                    StreamId::Video(_) => *i >= start_idx,
-                    StreamId::Audio(_) => p.time() >= cut,
+                    StreamId::Video(_) => video_start(p.stream()).is_some_and(|start| *i >= start),
+                    StreamId::Audio(_) => p.time() >= earliest,
                 };
                 in_window && streams.contains(&p.stream()) && p.time() <= now
             })
@@ -295,7 +319,7 @@ impl ReplayBuffer {
             .collect();
         // Stable: keeps decode order within each stream.
         packets.sort_by_key(|p| p.0.time());
-        Some((cut, packets))
+        Some((cuts.into_iter().map(|(s, _, t)| (s, t)).collect(), packets))
     }
 }
 
@@ -340,8 +364,8 @@ mod tests {
         let held = buf.buffered();
         assert!(held >= Duration::from_secs(10), "{held:?}");
         assert!(held < Duration::from_secs(12), "{held:?}");
-        let front = buf.entries.front().unwrap();
-        assert!(front.stream() == PRIMARY && front.keyframe());
+        let first_video = buf.entries.iter().find(|p| p.stream() == PRIMARY).unwrap();
+        assert!(first_video.keyframe());
     }
 
     #[test]
@@ -369,7 +393,8 @@ mod tests {
         feed(&mut buf, 30);
         let now = Timestamp(30 * SEC);
         // Last 5.5 s -> the keyframe at 24 s (the one at or before 24.5 s).
-        let (cut, pkts) = buf.snapshot(now, Duration::from_millis(5500), &[StreamId::Video(0), StreamId::Audio(0)]).unwrap();
+        let (cuts, pkts) = buf.snapshot(now, Duration::from_millis(5500), &[StreamId::Video(0), StreamId::Audio(0)]).unwrap();
+        let cut = cuts[0].1;
         assert_eq!(cut, Timestamp(24 * SEC));
         let first = pkts[0].load().unwrap();
         assert!(first.keyframe && first.stream == StreamId::Video(0));
@@ -391,12 +416,47 @@ mod tests {
             }
         }
         // Cut at the keyframe at 2 s; audio from 2.0 s arrived before that keyframe.
-        let (cut, pkts) = buf.snapshot(Timestamp(4 * SEC), Duration::from_secs(2), &[StreamId::Video(0), StreamId::Audio(0)]).unwrap();
+        let (cuts, pkts) = buf.snapshot(Timestamp(4 * SEC), Duration::from_secs(2), &[StreamId::Video(0), StreamId::Audio(0)]).unwrap();
+        let cut = cuts[0].1;
         assert_eq!(cut, Timestamp(2 * SEC));
         let first_audio = pkts.iter().map(|p| p.load().unwrap()).find(|p| p.stream == StreamId::Audio(0)).unwrap();
         assert_eq!(first_audio.time, Timestamp(2 * SEC));
         let times: Vec<_> = pkts.iter().map(|p| p.load().unwrap().time).collect();
         assert!(times.windows(2).all(|w| w[0] <= w[1]), "sorted by time");
+    }
+
+    #[test]
+    fn eviction_keeps_early_arriving_audio_of_the_kept_window() {
+        // Video arrives 1 s after audio (x264 lookahead); a tight byte cap forces eviction.
+        let mut buf = ram(600, 150_000);
+        for f in 0..1200i64 {
+            if f >= 60 {
+                let vf = f - 60;
+                buf.push(pkt(StreamId::Video(0), vf, vf % 60 == 0, vf * SEC / 60, 1000)).unwrap();
+            }
+            if f % 3 == 0 && !buf.entries.is_empty() {
+                buf.push(pkt(StreamId::Audio(0), f / 3, true, f * SEC / 60, 100)).unwrap();
+            }
+        }
+        let (cuts, pkts) = buf.snapshot(Timestamp(20 * SEC), Duration::from_secs(600), &[StreamId::Video(0), StreamId::Audio(0)]).unwrap();
+        let cut = cuts[0].1;
+        let first_audio = pkts.iter().map(|p| p.load().unwrap()).find(|p| p.stream == StreamId::Audio(0)).unwrap();
+        // Audio must start at the cut, not ~1 s later.
+        assert!(first_audio.time.0 - cut.0 < SEC / 20, "audio starts {} ms late", (first_audio.time.0 - cut.0) / 10_000);
+    }
+
+    #[test]
+    fn each_video_stream_gets_its_own_keyframe_cut() {
+        let mut buf = ram(60, usize::MAX);
+        // Monitor 0: keyframe every second at 0.0 s; monitor 1 offset by 0.5 s.
+        for f in 0..360i64 {
+            let t = f * SEC / 60;
+            buf.push(pkt(StreamId::Video(0), f, f % 60 == 0, t, 10)).unwrap();
+            buf.push(pkt(StreamId::Video(1), f, (f + 30) % 60 == 0, t, 10)).unwrap();
+        }
+        let (cuts, _) = buf.snapshot(Timestamp(6 * SEC), Duration::from_millis(2200), &[StreamId::Video(0), StreamId::Video(1)]).unwrap();
+        // want = 3.8 s: monitor 0 cuts at 3.0 s, monitor 1 at 3.5 s.
+        assert_eq!(cuts, vec![(StreamId::Video(0), Timestamp(3 * SEC)), (StreamId::Video(1), Timestamp(3 * SEC + SEC / 2))]);
     }
 
     #[test]
@@ -411,7 +471,8 @@ mod tests {
     fn snapshot_longer_than_buffer_returns_everything() {
         let mut buf = ram(60, usize::MAX);
         feed(&mut buf, 3);
-        let (cut, _) = buf.snapshot(Timestamp(3 * SEC), Duration::from_secs(600), &[StreamId::Video(0)]).unwrap();
+        let (cuts, _) = buf.snapshot(Timestamp(3 * SEC), Duration::from_secs(600), &[StreamId::Video(0)]).unwrap();
+        let cut = cuts[0].1;
         assert_eq!(cut, Timestamp(0));
     }
 

@@ -4,7 +4,14 @@ Manual test status. Tick a box when a feature has been tried on real hardware an
 note (machine, date, what broke) when it did not. Automated tests: `cargo test --workspace`, plus
 `cargo test -p lanes-core --test live_session -- --ignored --nocapture` for a real capture run.
 
-Hardware so far: NVIDIA RTX 5060 Ti, Windows 11, 1 and 3 monitors.
+Hardware so far: NVIDIA RTX 5060 Ti, Windows 11, 1 and 3 monitors (two of the same model),
+SteelSeries Sonar audio devices, Blade & Soul NEO in borderless fullscreen.
+
+Automated full test, 2026-10-20 (release build, sandboxed settings per case, driven by the
+global hotkeys): follow game, window mode, HEVC/AV1/x264, Opus, four-lane per-app audio, disk and
+RAM-capped replay, clip presets, canvas and separate-file multi-monitor with caps, pause/resume,
+disk guard, crash safety, a 5-minute recording, clips library playback and remux. Measured
+0.2–0.7 % CPU while capturing (1.7 % with x264).
 
 ## Done
 
@@ -17,10 +24,10 @@ Hardware so far: NVIDIA RTX 5060 Ti, Windows 11, 1 and 3 monitors.
 
 ## Capture
 
-- [ ] Follow game: capture switches to the game window when it starts, back to the monitor when it closes
-- [ ] Window mode: pick a window by exe; window resizing and alt-tab
-- [ ] Per-monitor caps (e.g. secondary at 30 fps / 720p) in both multi-monitor modes
-- [ ] Output resolution presets (1080p / 720p / custom) and frame rates other than 60
+- [x] Follow game: captures the detected game's window (borderless, unfocused) — switching back on close not yet seen
+- [x] Window mode: window picked by exe (resizing / alt-tab not yet tested)
+- [x] Per-monitor caps (e.g. secondary at 30 fps / 720p) in both multi-monitor modes
+- [x] Output resolution presets (1080p / 720p / custom) and frame rates other than 60 (720p30 tested)
 - [ ] Capture method forced to Desktop Duplication (no cursor is expected)
 - [ ] Capture cursor on/off
 - [ ] A game that blocks capture (anti-cheat / black frames): fallback and error notice
@@ -28,39 +35,39 @@ Hardware so far: NVIDIA RTX 5060 Ti, Windows 11, 1 and 3 monitors.
 
 ## Encoding
 
-- [ ] NVENC HEVC and AV1
+- [x] NVENC HEVC and AV1
 - [ ] AMD AMF (AMD GPU as the main GPU)
 - [ ] Intel QuickSync (Intel GPU as the main GPU)
-- [ ] x264 fallback (choose it in Settings)
+- [x] x264 fallback (choose it in Settings)
 - [ ] CBR, VBR and CQP; Performance / Balanced / Quality presets
-- [ ] Opus audio
+- [x] Opus audio
 
 ## Recording
 
-- [ ] Start/stop via hotkey (Ctrl+Shift+F9), tray and Dashboard
-- [ ] Pause/resume (Ctrl+Shift+F8): no gap or jump in the file
-- [ ] MP4 remux on stop, and keeping MKV with remux turned off
-- [ ] Filename template with {game} {profile} {date} {time}
-- [ ] Disk-space guard: warn and stop modes
-- [ ] Long recording (1 h+): file plays, A/V still in sync at the end
-- [ ] App killed mid-recording: the MKV is still playable
+- [x] Start/stop via hotkey (Ctrl+Shift+F9) — tray not yet tested
+- [x] Pause/resume (Ctrl+Shift+F8): no gap or jump in the file
+- [x] MP4 remux on stop (keeping MKV with remux off not yet tested)
+- [x] Filename template with {game} {preset} {date} {time}
+- [x] Disk-space guard: stop mode refuses to start (warn mode not yet tested)
+- [x] Long recording: 5 min, audio/video end within a few ms (1 h+ not yet tested)
+- [x] App killed mid-recording: the MKV is still playable and converts to MP4
 
 ## Replay buffer & clips
 
-- [ ] Save clip via hotkeys (Ctrl+Shift+F10 / F12) while a game has focus
-- [ ] Toggle replay via hotkey (Ctrl+Shift+F11) and tray
+- [x] Save clip via hotkeys (Ctrl+Shift+F10 / F12) — with the game unfocused; in-game focus not yet tested
+- [x] Toggle replay via hotkey (Ctrl+Shift+F11) — tray not yet tested
 - [ ] Clip sound and Windows notification (game keeps focus)
-- [ ] Preset with a lane subset, own folder and own filename template
-- [ ] Quality presets High / Medium / Low (background re-encode)
-- [ ] Disk-backed replay buffer
-- [ ] RAM cap: buffer stops growing at the cap
-- [ ] Clip longer than the buffer holds (gets what is there)
-- [ ] Recording and replay buffer at the same time
+- [x] Preset with a lane subset, own folder and own filename template
+- [x] Quality preset Medium (background re-encode on NVENC)
+- [x] Disk-backed replay buffer
+- [x] RAM cap: buffer stops growing at the cap
+- [x] Clip longer than the buffer holds (gets what is there)
+- [x] Recording and replay buffer at the same time
 
 ## Audio lanes
 
-- [ ] Both default tracks (Game, Mic) present and named in the file (VLC/mpv track list)
-- [ ] Per-app source (Spotify, browser, Discord) on its own lane
+- [x] Both default tracks (Game, Mic) present and named in the file
+- [x] Per-app source on its own lane (test tone via ffplay.exe; Discord/game captured but were silent)
 - [ ] One source routed to several lanes
 - [ ] Volume, mute and mono, per lane and per source, changed live while recording
 - [ ] Noise gate and noise suppression on a mic
@@ -68,7 +75,7 @@ Hardware so far: NVIDIA RTX 5060 Ti, Windows 11, 1 and 3 monitors.
 - [ ] Drag & drop and the matrix view
 - [ ] Meters move with sound
 - [ ] Adding a lane applies to the next recording
-- [ ] A/V sync by ear/eye (clap test)
+- [ ] A/V sync by ear/eye (clap test) — timestamps verified: audio within 20 ms at start and end
 
 ## Devices
 
@@ -79,14 +86,14 @@ Hardware so far: NVIDIA RTX 5060 Ti, Windows 11, 1 and 3 monitors.
 ## Games & profiles
 
 - [ ] Game from the game list detected; Dashboard shows it
-- [ ] Unknown fullscreen game detected by the heuristic (browsers/video players are not)
+- [x] Unknown fullscreen game detected by the heuristic, also when not focused
 - [ ] Profile switches automatically when the game starts and back when it exits
 - [ ] Create, duplicate, rename, delete profiles; per-profile replay length
 
 ## Clips library
 
 - [ ] Trim (lossless, snaps to keyframes)
-- [ ] Convert to MP4 (MKV clips)
+- [x] Convert to MP4 (MKV clips), and MKV playback in the viewer
 - [ ] Delete goes to the recycle bin
 - [ ] Show in folder / open output folder
 - [ ] Search and the clip/recording filter
@@ -113,4 +120,4 @@ Hardware so far: NVIDIA RTX 5060 Ti, Windows 11, 1 and 3 monitors.
 
 - [ ] PresentMon frame time with and without Lanes in a real game (`docs/PERFORMANCE.md`)
 - [ ] CPU / RAM while recording at 1440p and 4K
-- [ ] UI closed: no WebView2 processes left (Task Manager)
+- [x] UI closed: no WebView2 processes left (Task Manager)

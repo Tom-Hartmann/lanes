@@ -1,5 +1,5 @@
 //! Operations on finished files for the clips library: probing, thumbnails,
-//! MKV → MP4 remux, lossless keyframe-aligned trim and re-encoding for clip
+//! MKV â†’ MP4 remux, lossless keyframe-aligned trim and re-encoding for clip
 //! quality presets. All run on background threads, never on capture paths.
 
 use std::path::Path;
@@ -7,7 +7,7 @@ use std::ptr;
 
 use crate::av::{self, CodecContext, CodecParams, Frame, Packet, cstr, ffi};
 use crate::capture::thumbnail::{base64, bmp};
-use crate::config::{EncoderBackend, EncoderSettings, RateControl, VideoCodec};
+use crate::config::{EncoderBackend, VideoCodec};
 use crate::error::{Error, Result, av_check};
 
 /// An opened input file.
@@ -67,7 +67,7 @@ pub fn duration(path: &Path) -> Option<f64> {
     (d > 0).then(|| d as f64 / f64::from(ffi::AV_TIME_BASE))
 }
 
-/// Copies all streams into a new container (e.g. MKV → MP4 with faststart).
+/// Copies all streams into a new container (e.g. MKV â†’ MP4 with faststart).
 pub fn remux(src: &Path, dst: &Path) -> Result<()> {
     copy_range(src, dst, None)
 }
@@ -99,7 +99,26 @@ fn copy_range(src: &Path, dst: &Path, range: Option<(f64, f64)>) -> Result<()> {
     }
     let tmp = dst.with_extension("partial");
     let container = crate::mux::Container::from_path(dst);
-    let mut mux = crate::mux::Muxer::create(&tmp, container, &infos)?;
+    let result = copy_packets(&input, video, &infos, &tmp, container, range);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result?;
+    std::fs::rename(&tmp, dst)?;
+    Ok(())
+}
+
+fn copy_packets(
+    input: &Input,
+    video: Option<usize>,
+    infos: &[av::StreamInfo],
+    tmp: &Path,
+    container: crate::mux::Container,
+    range: Option<(f64, f64)>,
+) -> Result<()> {
+    let mut mux = crate::mux::Muxer::create(tmp, container, infos)?;
+    // Last dts written per input stream; muxers like MP4 reject repeats.
+    let mut last_dts: Vec<Option<i64>> = vec![None; infos.len()];
 
     if let (Some((start, _)), Some(v)) = (range, video) {
         let st = input.streams()[v];
@@ -142,11 +161,19 @@ fn copy_range(src: &Path, dst: &Path, range: Option<(f64, f64)>) -> Result<()> {
                 continue;
             }
         let offset = av::rescale((origin * 1_000_000.0) as i64, av::rational(1, 1_000_000), tb);
+        let mut dts = if raw.dts == ffi::AV_NOPTS_VALUE { pts } else { raw.dts };
+        // Repair files with repeated timestamps (e.g. recorded by older builds
+        // around a pause) instead of failing the whole remux.
+        if let Some(prev) = last_dts[idx]
+            && dts <= prev {
+                dts = prev + 1;
+            }
+        last_dts[idx] = Some(dts);
         let enc = av::EncodedPacket {
             stream: infos[idx].id,
             data: pkt.data().into(),
-            pts,
-            dts: if raw.dts == ffi::AV_NOPTS_VALUE { pts } else { raw.dts },
+            pts: pts.max(dts),
+            dts,
             duration: raw.duration,
             keyframe: raw.flags & ffi::AV_PKT_FLAG_KEY != 0,
             time: crate::Timestamp(0),
@@ -154,7 +181,6 @@ fn copy_range(src: &Path, dst: &Path, range: Option<(f64, f64)>) -> Result<()> {
         mux.write(&enc, offset)?;
     }
     mux.finish()?;
-    std::fs::rename(&tmp, dst)?;
     Ok(())
 }
 
@@ -239,7 +265,7 @@ pub fn thumbnail(path: &Path, width: u32) -> Result<String> {
     Ok(format!("data:image/bmp;base64,{}", base64(&bmp(w, h, &px))))
 }
 
-/// Nearest-neighbour downscale + BT.709 limited-range YUV → BGRA.
+/// Nearest-neighbour downscale + BT.709 limited-range YUV â†’ BGRA.
 fn frame_to_bgra(frame: &Frame, width: u32) -> Result<(u32, u32, Vec<u8>)> {
     // SAFETY: plane pointers/linesizes describe the decoded frame; every read
     // index is bounded by the frame's width/height and subsampling.
@@ -293,36 +319,52 @@ pub fn transcode(src: &Path, dst: &Path, backend: EncoderBackend, codec: VideoCo
     // SAFETY: valid decoder context.
     let (w, h, fr) = unsafe { ((*dec.0).width, (*dec.0).height, (*input.streams()[v]).avg_frame_rate) };
     let fps = if fr.num > 0 && fr.den > 0 { (fr.num / fr.den).max(1) } else { 60 };
+    let open = |name: &str| -> Result<CodecContext> {
+        let enc = CodecContext::encoder(name)?;
+        // SAFETY: not yet opened; plain field setup.
+        unsafe {
+            let c = &mut *enc.0;
+            c.width = w;
+            c.height = h;
+            c.time_base = av::rational(1, fps);
+            c.framerate = av::rational(fps, 1);
+            c.pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+            c.gop_size = fps;
+            c.max_b_frames = 0;
+            c.bit_rate = i64::from(bitrate_kbps) * 1000;
+            c.rc_max_rate = c.bit_rate * 3 / 2;
+            c.rc_buffer_size = (c.bit_rate * 3) as i32;
+            c.color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
+            c.color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
+            c.colorspace = ffi::AVColorSpace::AVCOL_SPC_BT709;
+            c.color_range = ffi::AVColorRange::AVCOL_RANGE_MPEG;
+            c.flags |= ffi::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
+        }
+        enc.open()?;
+        Ok(enc)
+    };
+    // The session's hardware encoder (system-memory NV12 input), else x264.
     let name = crate::encode::encoder_name(backend, codec).unwrap_or("libx264");
-    let enc = CodecContext::encoder(name).or_else(|_| CodecContext::encoder("libx264"))?;
-    // SAFETY: not yet opened; plain field setup.
-    unsafe {
-        let c = &mut *enc.0;
-        c.width = w;
-        c.height = h;
-        c.time_base = av::rational(1, fps);
-        c.framerate = av::rational(fps, 1);
-        c.pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
-        c.gop_size = fps;
-        c.max_b_frames = 0;
-        c.bit_rate = i64::from(bitrate_kbps) * 1000;
-        c.rc_max_rate = c.bit_rate * 3 / 2;
-        c.rc_buffer_size = (c.bit_rate * 3) as i32;
-        c.color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
-        c.color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
-        c.colorspace = ffi::AVColorSpace::AVCOL_SPC_BT709;
-        c.color_range = ffi::AVColorRange::AVCOL_RANGE_MPEG;
-        c.flags |= ffi::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
-    }
-    let _ = EncoderSettings { rate_control: RateControl::Vbr, ..Default::default() };
-    enc.open()?;
+    let (enc, used) = match open(name) {
+        Ok(e) => (e, name),
+        Err(e) if name != "libx264" => {
+            log::warn!("{name} unavailable for re-encoding ({e}); using x264");
+            (open("libx264")?, "libx264")
+        }
+        Err(e) => return Err(e),
+    };
+    log::info!("re-encoding {} with {used} at {bitrate_kbps} kbps", src.display());
 
     // Output: transcoded video + copied audio streams.
+    let track_title = |st: *mut ffi::AVStream| {
+        // SAFETY: valid stream of the open input.
+        unsafe { dict_get((*st).metadata, "title").or_else(|| dict_get((*st).metadata, "handler_name")).unwrap_or_default() }
+    };
     let mut infos = vec![av::StreamInfo {
         id: av::StreamId::Video(0),
         params: std::sync::Arc::new(enc.parameters()?),
         time_base: enc.time_base(),
-        title: String::new(),
+        title: track_title(input.streams()[v]),
     }];
     for (i, &st) in input.streams().iter().enumerate() {
         if i == v {
@@ -334,7 +376,7 @@ pub fn transcode(src: &Path, dst: &Path, backend: EncoderBackend, codec: VideoCo
                 id: av::StreamId::Audio(i as u8),
                 params: std::sync::Arc::new(CodecParams::from_raw_copy((*st).codecpar)?),
                 time_base: (*st).time_base,
-                title: dict_get((*st).metadata, "title").unwrap_or_default(),
+                title: track_title(st),
             });
         }
     }

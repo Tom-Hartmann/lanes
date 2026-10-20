@@ -32,7 +32,8 @@ pub type ClipDone = Box<dyn FnOnce(Result<(Vec<PathBuf>, f64)>) + Send>;
 
 pub enum RouterCommand {
     StartRecording { files: Vec<FilePlan>, reply: Sender<Result<()>> },
-    StopRecording { reply: Sender<Vec<PathBuf>> },
+    /// Stops at `at`: the file ends with the packets captured before that moment.
+    StopRecording { at: Timestamp, reply: Sender<Vec<PathBuf>> },
     Pause,
     Resume,
     SetReplay(Option<(ReplayLimits, ReplayStorage, PathBuf)>),
@@ -67,6 +68,8 @@ impl Router {
         let stats = Arc::new(RouterStats::default());
         let stop = Arc::new(AtomicBool::new(false));
         let worker = Worker {
+            last_seen: std::collections::HashMap::new(),
+            deferred: Vec::new(),
             t0,
             streams,
             replay: None,
@@ -90,7 +93,21 @@ impl Drop for Router {
     }
 }
 
+/// Work that waits until every stream has delivered packets up to a moment:
+/// encoders deliver 100-500 ms after capture, so acting immediately would cut
+/// off the end of the audio/video.
+enum Deferred {
+    Stop { at: Timestamp, reply: Sender<Vec<PathBuf>> },
+    Clip { now: Timestamp, length: Duration, files: Vec<FilePlan>, container: Container, done: ClipDone },
+}
+
+/// Longest wait for late packets before finishing anyway.
+const CATCH_UP_LIMIT: Duration = Duration::from_millis(1500);
+
 struct Worker {
+    /// Newest packet time seen per stream.
+    last_seen: std::collections::HashMap<StreamId, Timestamp>,
+    deferred: Vec<(Deferred, std::time::Instant)>,
     t0: Timestamp,
     streams: Vec<StreamInfo>,
     replay: Option<ReplayBuffer>,
@@ -105,7 +122,10 @@ impl Worker {
         loop {
             select! {
                 recv(packets) -> pkt => match pkt {
-                    Ok(pkt) => self.route(pkt),
+                    Ok(pkt) => {
+                        self.route(pkt);
+                        self.run_deferred(false);
+                    }
                     // All encoders gone: the session is over.
                     Err(_) => break,
                 },
@@ -113,7 +133,8 @@ impl Worker {
                     Ok(cmd) => self.command(cmd),
                     Err(_) => break,
                 },
-                default(Duration::from_millis(200)) => {
+                default(Duration::from_millis(if self.deferred.is_empty() { 200 } else { 20 })) => {
+                    self.run_deferred(false);
                     if stop.load(Ordering::Relaxed) && packets.is_empty() {
                         break;
                     }
@@ -121,12 +142,15 @@ impl Worker {
             }
             self.stats.queued.store(packets.len() as u64, Ordering::Relaxed);
         }
+        self.run_deferred(true);
         if let Some(rec) = self.recorder.take() {
             let _ = rec.finish();
         }
     }
 
     fn route(&mut self, pkt: SharedPacket) {
+        let seen = self.last_seen.entry(pkt.stream).or_insert(pkt.time);
+        *seen = (*seen).max(pkt.time);
         if let Some(replay) = &mut self.replay {
             if let Err(e) = replay.push(pkt.clone()) {
                 (self.on_error)(e);
@@ -148,6 +172,37 @@ impl Worker {
         }
     }
 
+    /// True once every stream has delivered a packet at or after `t`.
+    fn caught_up(&self, t: Timestamp) -> bool {
+        self.streams.iter().all(|s| self.last_seen.get(&s.id).is_some_and(|seen| *seen >= t))
+    }
+
+    /// Runs deferred stops/clips whose moment every stream has reached (or
+    /// that waited too long, or all of them when `force`).
+    fn run_deferred(&mut self, force: bool) {
+        let mut i = 0;
+        while i < self.deferred.len() {
+            let (job, since) = &self.deferred[i];
+            let at = match job {
+                Deferred::Stop { at, .. } => *at,
+                Deferred::Clip { now, .. } => *now,
+            };
+            if force || self.caught_up(at) || since.elapsed() >= CATCH_UP_LIMIT {
+                let (job, _) = self.deferred.remove(i);
+                match job {
+                    Deferred::Stop { reply, .. } => {
+                        let paths = self.recorder.take().map(|r| r.finish()).unwrap_or_default();
+                        self.stats.recorded_bytes.store(0, Ordering::Relaxed);
+                        let _ = reply.send(paths);
+                    }
+                    Deferred::Clip { now, length, files, container, done } => self.save_clip(now, length, files, container, done),
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     fn request_keyframes(&self) {
         for k in &self.keyframe_requests {
             k.store(true, Ordering::Relaxed);
@@ -163,10 +218,11 @@ impl Worker {
                 });
                 let _ = reply.send(result);
             }
-            RouterCommand::StopRecording { reply } => {
-                let paths = self.recorder.take().map(|r| r.finish()).unwrap_or_default();
-                self.stats.recorded_bytes.store(0, Ordering::Relaxed);
-                let _ = reply.send(paths);
+            RouterCommand::StopRecording { at, reply } => {
+                if let Some(r) = &mut self.recorder {
+                    r.stop_at = Some(at);
+                }
+                self.deferred.push((Deferred::Stop { at, reply }, std::time::Instant::now()));
             }
             RouterCommand::Pause => {
                 if let Some(r) = &mut self.recorder {
@@ -193,7 +249,9 @@ impl Worker {
                     },
                 },
             },
-            RouterCommand::SaveClip { now, length, files, container, done } => self.save_clip(now, length, files, container, done),
+            RouterCommand::SaveClip { now, length, files, container, done } => {
+                self.deferred.push((Deferred::Clip { now, length, files, container, done }, std::time::Instant::now()))
+            }
         }
     }
 
@@ -203,7 +261,7 @@ impl Worker {
             return;
         };
         let wanted: Vec<StreamId> = files.iter().flat_map(|f| f.streams.iter().copied()).collect();
-        let Some((cut, packets)) = replay.snapshot(now, length, &wanted) else {
+        let Some((cuts, packets)) = replay.snapshot(now, length, &wanted) else {
             done(Err(Error::Invalid("the replay buffer is still empty".into())));
             return;
         };
@@ -221,6 +279,8 @@ impl Worker {
                         .filter(|p| file.streams.contains(&p.stream()))
                         .map(|p| p.load())
                         .collect::<std::io::Result<_>>()?;
+                    // Each file starts at its own video stream's keyframe.
+                    let Some(&(_, cut)) = cuts.iter().find(|(id, _)| file.streams.contains(id)) else { continue };
                     duration = duration.max(crate::mux::write_packets(&file.path, container, &infos, &pkts, cut, t0)?);
                     paths.push(file.path.clone());
                 }
@@ -247,6 +307,8 @@ struct RecFile {
     shift: i64,
     /// Packets earlier than this belong to the cut-out part.
     open_from: Timestamp,
+    /// End time (start + duration) of the last video frame written.
+    video_end: Option<Timestamp>,
 }
 
 /// How much recent audio the recorder keeps while waiting for a keyframe.
@@ -256,6 +318,8 @@ const PREROLL: Duration = Duration::from_secs(3);
 
 struct Recorder {
     files: Vec<RecFile>,
+    /// Packets at or after this moment are not part of the recording.
+    stop_at: Option<Timestamp>,
     preroll: std::collections::VecDeque<SharedPacket>,
     infos: Vec<StreamInfo>,
     t0: Timestamp,
@@ -282,12 +346,16 @@ impl Recorder {
                 gate_since: t0,
                 shift: 0,
                 open_from: Timestamp(i64::MAX),
+                video_end: None,
             });
         }
-        Ok(Self { files, preroll: std::collections::VecDeque::new(), infos: streams.to_vec(), t0, paused_at: None })
+        Ok(Self { files, stop_at: None, preroll: std::collections::VecDeque::new(), infos: streams.to_vec(), t0, paused_at: None })
     }
 
     fn write(&mut self, pkt: &SharedPacket) -> Result<()> {
+        if self.stop_at.is_some_and(|s| pkt.time >= s) {
+            return Ok(());
+        }
         if !matches!(pkt.stream, StreamId::Video(_)) {
             self.preroll.push_back(pkt.clone());
             let horizon = pkt.time.0 - (PREROLL.as_nanos() / 100) as i64;
@@ -330,7 +398,12 @@ impl Recorder {
 
     fn write_one(infos: &[StreamInfo], f: &mut RecFile, pkt: &SharedPacket) -> Result<()> {
         let tb = infos.iter().find(|s| s.id == pkt.stream).map(|s| s.time_base).unwrap_or(av::rational(1, 1000));
-        let offset = av::rescale(f.shift, av::rational(1, Timestamp::TICKS_PER_SEC as i32), tb);
+        let ticks = av::rational(1, Timestamp::TICKS_PER_SEC as i32);
+        let offset = av::rescale(f.shift, ticks, tb);
+        if pkt.stream == f.video {
+            let end = Timestamp(pkt.time.0 + av::rescale(pkt.duration.max(1), tb, ticks));
+            f.video_end = Some(f.video_end.map_or(end, |e| e.max(end)));
+        }
         f.muxer.write(pkt, offset)
     }
 
@@ -344,7 +417,11 @@ impl Recorder {
         if let Some(at) = self.paused_at.take() {
             for f in &mut self.files {
                 f.gated = true;
-                f.gate_since = at;
+                // Resume exactly one frame after the last frame written. The
+                // pause moment alone is not enough: the frame that was being
+                // encoded when pause was pressed may already be in the file,
+                // and the resumed keyframe would then get the same timestamp.
+                f.gate_since = f.video_end.map_or(at, |end| end.max(at));
             }
         }
     }

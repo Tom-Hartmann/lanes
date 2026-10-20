@@ -152,3 +152,23 @@ fn probe_encoders() {
         }
     }
 }
+
+#[test]
+#[ignore = "needs LANES_REMUX_SRC"]
+fn remux_file() {
+    let Some(src) = std::env::var_os("LANES_REMUX_SRC") else { return };
+    let src = PathBuf::from(src);
+    let dst = std::env::temp_dir().join("lanes-remux-test.mp4");
+    let r = lanes_core::media::remux(&src, &dst);
+    eprintln!("remux result: {r:?}");
+    eprintln!("duration: {:?}", lanes_core::media::duration(&dst));
+    let _ = std::fs::remove_file(&dst);
+}
+
+#[test]
+#[ignore = "inspects the real desktop"]
+fn detect_game_now() {
+    let fg = lanes_core::capture::windows_list::foreground();
+    eprintln!("foreground: {:?}", fg.map(|w| (w.exe, w.fullscreen)));
+    eprintln!("detected: {:?}", lanes_core::games::detect(&[], true).map(|g| (g.name, g.exe, g.pid, g.fullscreen)));
+}
