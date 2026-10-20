@@ -168,3 +168,24 @@ reputation. Reputation grows with clean downloads and installs over time, and it
 (signer identity) as well as per file hash. A new certificate or an unsigned file starts at zero. Keeping the
 same certificate across releases and signing every file both help. Microsoft no longer grants EV certificates
 instant reputation, so expect warnings on the first releases whichever certificate type you use.
+
+
+## Signed GitHub releases
+
+GitHub's build machines cannot use the local dev certificate: its private key
+is non-exportable and stays on the PC that created it. Two ways to get signed
+release files:
+
+1. **Sign locally, upload:** `powershell -File scripts/publish-signed.ps1 [-Tag vX.Y.Z]`
+   builds the installer and portable ZIP on this PC with the configured
+   certificate and replaces the files of that GitHub release. With the dev
+   certificate the signature is trusted only on PCs that imported it (admin
+   mode works there, SmartScreen still warns elsewhere).
+2. **Azure Trusted Signing in CI:** create a Trusted Signing account and
+   certificate profile, an Entra app registration with the
+   "Trusted Signing Certificate Profile Signer" role, then add the repository
+   secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`,
+   `AZURE_SIGNING_ENDPOINT` (e.g. `https://weu.codesigning.azure.net`),
+   `AZURE_SIGNING_ACCOUNT` and `AZURE_SIGNING_PROFILE`. The release workflow
+   then signs every exe, DLL and the installer. This setup is wired up but has
+   not been run yet (no account).

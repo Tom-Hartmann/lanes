@@ -170,6 +170,14 @@ export interface Settings {
     fullscreenHeuristic: boolean;
     autoSwitchProfile: boolean;
   };
+  share: {
+    /** Discord channel webhook URL (Server settings → Integrations → Webhooks). */
+    discordWebhook: string | null;
+    /** Size limit for share copies in MB; 0 = no limit. */
+    maxMb: number;
+    /** Message posted with the clip. Placeholders: {game} {preset} {file} */
+    discordMessage: string;
+  };
 }
 
 // -------------------------------------------------------------- runtime info
@@ -268,6 +276,12 @@ export interface EncoderInfo {
   name: string;
   codecs: VideoCodec[];
   hardware: boolean;
+}
+
+export interface ShareResult {
+  path: string;
+  sizeBytes: number;
+  reencoded: boolean;
 }
 
 export interface ClipInfo {
@@ -379,6 +393,16 @@ export const api = {
   /** Lossless cut snapped to keyframes; returns the new file's path. */
   trimClip: (path: string, startSecs: number, endSecs: number) =>
     invoke<string>("trim_clip", { path, startSecs, endSecs }),
+
+  /** Audio track names (lanes) of a clip. */
+  clipTracks: (path: string) => invoke<string[]>("clip_tracks", { path }),
+  /** Share copy with one mixed audio track (tracks: indices, null = all); maxMb 0 = no limit. */
+  shareClip: (path: string, tracks: number[] | null, maxMb: number) =>
+    invoke<ShareResult>("share_clip", { path, tracks, maxMb }),
+  /** Clip on the clipboard as a file (Ctrl+V in Discord uploads it). */
+  copyClipFile: (path: string) => invoke<void>("copy_clip_file", { path }),
+  /** Native drag of the file; call while the mouse button is held. */
+  dragClip: (path: string) => invoke<boolean>("drag_clip", { path }),
 
   /** Enables/disables admin mode. Enabling shows one UAC prompt. */
   setRunAsAdmin: (enabled: boolean) => invoke<AppInfo>("set_run_as_admin", { enabled }),

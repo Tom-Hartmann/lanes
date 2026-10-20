@@ -7,6 +7,7 @@ import { GeneralSection } from "./GeneralSection";
 import { OutputSection } from "./OutputSection";
 import { PresetsSection } from "./PresetsSection";
 import { ReplaySection } from "./ReplaySection";
+import { SharingSection } from "./SharingSection";
 
 export function SettingsPage() {
   const settings = useSettingsStore((s) => s.settings);
@@ -29,6 +30,7 @@ export function SettingsPage() {
         <div className="flex min-w-0 flex-col gap-4">
           <OutputSection settings={settings} />
           <GeneralSection settings={settings} />
+          <SharingSection settings={settings} />
           <AdminSection />
         </div>
       </div>

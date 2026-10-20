@@ -19,6 +19,7 @@ pub mod gpu;
 pub mod media;
 pub mod mux;
 pub mod replay;
+pub mod share;
 pub mod sysinfo;
 pub mod util;
 

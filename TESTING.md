@@ -101,6 +101,15 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 - [ ] Show in folder / open output folder
 - [ ] Search and the clip/recording filter
 
+## Sharing
+
+- [x] Share copy: lanes mixed into one track; 435 MB / 3 min clip -> 7.4 MB with the 10 MB limit (NVENC), copy without limit
+- [ ] Share panel in the clip viewer: lane checkboxes, size limit, "Create share copy"
+- [ ] Drag the share copy into Discord / Explorer
+- [ ] "Copy file", then Ctrl+V in Discord uploads it
+- [ ] "Send to Discord" through a channel webhook (progress, 10 MB limit message)
+- [ ] Signed release files via scripts/publish-signed.ps1
+
 ## Hotkeys
 
 - [ ] Rebinding in the Hotkeys page

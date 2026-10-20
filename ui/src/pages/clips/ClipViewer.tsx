@@ -6,6 +6,7 @@ import { formatBytes, formatDate, formatDuration } from "../../lib/format";
 import { api, errorMessage, type ClipInfo } from "../../lib/ipc";
 import { attempt, notify } from "../../store/noticeStore";
 import { forgetThumbnail } from "./thumbnails";
+import { SharePanel } from "./SharePanel";
 import { TrimBar } from "./TrimBar";
 
 interface Props {
@@ -197,6 +198,8 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
             </Callout>
           </div>
         </div>
+
+        <SharePanel clip={clip} />
 
         <footer className="flex flex-wrap items-center gap-2 border-t border-zinc-800 px-4 py-2.5">
           <Button size="sm" variant="primary" disabled={!trimmed || busy !== null || duration <= 0} onClick={() => void trim()}>

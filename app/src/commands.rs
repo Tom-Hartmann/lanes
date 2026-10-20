@@ -313,6 +313,57 @@ pub async fn trim_clip(app: AppHandle, path: String, start_secs: f64, end_secs: 
     .await
 }
 
+/// Audio track names of a clip (lane names), for choosing what to share.
+#[tauri::command]
+pub async fn clip_tracks(app: AppHandle, path: String) -> CmdResult<Vec<String>> {
+    blocking(move || {
+        let p = checked_path(&app.state::<AppState>(), &path)?;
+        lanes_core::media::audio_track_titles(&p).map_err(err)
+    })
+    .await
+}
+
+/// Makes a share copy in `<clip folder>\Shared`: one mixed audio track,
+/// re-encoded only if needed to fit `max_mb` (0 = no limit).
+#[tauri::command]
+pub async fn share_clip(app: AppHandle, path: String, tracks: Option<Vec<usize>>, max_mb: u32) -> CmdResult<lanes_core::share::ShareResult> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let p = checked_path(&state, &path)?;
+        let dir = p.parent().unwrap_or(Path::new(".")).join("Shared");
+        std::fs::create_dir_all(&dir).map_err(err)?;
+        let out = naming::unique_path(&dir, &format!("{}_share", p.file_stem().unwrap_or_default().to_string_lossy()), "mp4");
+        let backend = state
+            .gpu()
+            .and_then(|gpu| lanes_core::encode::resolve(lanes_core::encode::available(gpu), state.settings().encoder.backend, lanes_core::config::VideoCodec::H264))
+            .map_or(lanes_core::config::EncoderBackend::X264, |(b, _)| b);
+        let opts = lanes_core::share::ShareOptions {
+            audio_tracks: tracks,
+            max_bytes: (max_mb > 0).then(|| u64::from(max_mb) * 1024 * 1024),
+            backend,
+        };
+        let result = lanes_core::share::export(&p, &out, &opts).map_err(err)?;
+        log::info!("share copy: {} ({:.1} MB{})", result.path, result.size_bytes as f64 / 1e6, if result.reencoded { ", re-encoded" } else { "" });
+        Ok(result)
+    })
+    .await
+}
+
+/// Puts a clip on the clipboard as a file: Ctrl+V in Discord uploads it.
+#[tauri::command]
+pub fn copy_clip_file(state: State<'_, AppState>, path: String) -> CmdResult<()> {
+    let p = checked_path(&state, &path)?;
+    crate::share::copy_file(&p)
+}
+
+/// Starts a native drag of a clip. Sync on purpose: OLE drag & drop must run
+/// on the UI thread, while the mouse button is still down.
+#[tauri::command]
+pub fn drag_clip(state: State<'_, AppState>, path: String) -> CmdResult<bool> {
+    let p = checked_path(&state, &path)?;
+    crate::share::drag_file(&p).map_err(err)
+}
+
 fn kind_of(state: &AppState, path: &Path) -> library::Kind {
     state
         .library

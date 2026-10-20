@@ -165,8 +165,11 @@ pub fn allow_asset_folders(app: &AppHandle, folders: &[PathBuf]) {
     let scope = app.asset_protocol_scope();
     for f in folders {
         let _ = std::fs::create_dir_all(f);
-        if let Err(e) = scope.allow_directory(f, false) {
-            log::warn!("asset scope for {}: {e}", f.display());
+        // "Shared" holds share copies (played and uploaded from the UI).
+        for dir in [f.clone(), f.join("Shared")] {
+            if let Err(e) = scope.allow_directory(&dir, false) {
+                log::warn!("asset scope for {}: {e}", dir.display());
+            }
         }
     }
 }

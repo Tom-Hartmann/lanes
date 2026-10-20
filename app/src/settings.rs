@@ -40,6 +40,25 @@ pub struct Settings {
     pub active_profile: Id,
     pub games: Vec<GameEntry>,
     pub game_detection: GameDetection,
+    pub share: ShareSettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ShareSettings {
+    /// Discord channel webhook (Server settings -> Integrations -> Webhooks).
+    pub discord_webhook: Option<String>,
+    /// Size limit for share copies in MB; 0 = no limit. Discord without
+    /// boosts accepts 10 MB.
+    pub max_mb: u32,
+    /// Message posted with the clip. Placeholders: {game} {preset} {file}.
+    pub discord_message: String,
+}
+
+impl Default for ShareSettings {
+    fn default() -> Self {
+        Self { discord_webhook: None, max_mb: 10, discord_message: "{game} clip".into() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -229,6 +248,7 @@ impl Default for Settings {
             active_profile: "default".into(),
             games: Vec::new(),
             game_detection: GameDetection::default(),
+            share: ShareSettings::default(),
         }
     }
 }

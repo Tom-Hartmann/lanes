@@ -11,10 +11,10 @@ use crate::config::{EncoderBackend, VideoCodec};
 use crate::error::{Error, Result, av_check};
 
 /// An opened input file.
-struct Input(*mut ffi::AVFormatContext);
+pub(crate) struct Input(pub(crate) *mut ffi::AVFormatContext);
 
 impl Input {
-    fn open(path: &Path) -> Result<Self> {
+    pub(crate) fn open(path: &Path) -> Result<Self> {
         let cpath = cstr(&path.to_string_lossy());
         let mut ctx = ptr::null_mut();
         // SAFETY: valid string and out-pointer; ownership moves into `Input`
@@ -27,18 +27,18 @@ impl Input {
         }
     }
 
-    fn streams(&self) -> &[*mut ffi::AVStream] {
+    pub(crate) fn streams(&self) -> &[*mut ffi::AVStream] {
         // SAFETY: nb_streams entries are valid for the context's lifetime.
         unsafe { std::slice::from_raw_parts((*self.0).streams, (*self.0).nb_streams as usize) }
     }
 
-    fn video_stream(&self) -> Option<usize> {
+    pub(crate) fn video_stream(&self) -> Option<usize> {
         // SAFETY: valid streams.
         self.streams().iter().position(|&s| unsafe { (*(*s).codecpar).codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO })
     }
 
     /// Reads the next packet, or `None` at end of file.
-    fn read(&self, pkt: &mut Packet) -> Result<Option<()>> {
+    pub(crate) fn read(&self, pkt: &mut Packet) -> Result<Option<()>> {
         // SAFETY: valid context and packet; the previous payload is unref'd first.
         unsafe {
             ffi::av_packet_unref(pkt.0);
@@ -57,6 +57,27 @@ impl Drop for Input {
         // SAFETY: opened by avformat_open_input; closed once.
         unsafe { ffi::avformat_close_input(&mut self.0) };
     }
+}
+
+/// Titles of the audio tracks (lane names in Lanes files), in order.
+pub fn audio_track_titles(path: &Path) -> Result<Vec<String>> {
+    let input = Input::open(path)?;
+    let mut out = Vec::new();
+    for &st in input.streams() {
+        // SAFETY: valid streams of the open input.
+        unsafe {
+            if (*(*st).codecpar).codec_type == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO {
+                let n = out.len() + 1;
+                out.push(
+                    dict_get((*st).metadata, "title")
+                        .or_else(|| dict_get((*st).metadata, "handler_name"))
+                        .filter(|t| !t.is_empty() && t != "SoundHandler")
+                        .unwrap_or_else(|| format!("Track {n}")),
+                );
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Duration in seconds.
@@ -194,7 +215,7 @@ unsafe fn dict_get(dict: *mut ffi::AVDictionary, key: &str) -> Option<String> {
 }
 
 /// Decoder for the file's video stream (software).
-fn open_decoder(input: &Input, v: usize) -> Result<CodecContext> {
+pub(crate) fn open_decoder(input: &Input, v: usize) -> Result<CodecContext> {
     let st = input.streams()[v];
     // SAFETY: valid parameters; decoder context owned by CodecContext.
     unsafe {
@@ -215,7 +236,7 @@ fn open_decoder(input: &Input, v: usize) -> Result<CodecContext> {
 }
 
 /// Decodes frames of the video stream, calling `f` for each until it returns false.
-fn decode_video(input: &Input, v: usize, dec: &CodecContext, mut f: impl FnMut(&Frame) -> Result<bool>) -> Result<()> {
+pub(crate) fn decode_video(input: &Input, v: usize, dec: &CodecContext, mut f: impl FnMut(&Frame) -> Result<bool>) -> Result<()> {
     let mut pkt = Packet::alloc()?;
     let frame = Frame::alloc()?;
     let mut draining = false;
@@ -432,7 +453,7 @@ pub fn transcode(src: &Path, dst: &Path, backend: EncoderBackend, codec: VideoCo
 }
 
 /// Converts a decoded 4:2:0 frame to NV12 (identity for NV12).
-fn to_nv12(src: &Frame) -> Result<Frame> {
+pub(crate) fn to_nv12(src: &Frame) -> Result<Frame> {
     let out = Frame::alloc()?;
     // SAFETY: the output buffer is allocated for NV12 at the source size;
     // copies are bounded by width/height and each plane's linesize.

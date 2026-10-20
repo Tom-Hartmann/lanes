@@ -2,8 +2,12 @@
 # publishes them as a GitHub Release; running it by hand ("Run workflow")
 # only uploads them as build artifacts.
 #
-# Code signing: set the repository secret LANES_SIGN_MODE (and the matching
-# LANES_SIGN_* secrets, see docs/SIGNING.md). Without it the build is unsigned.
+# Code signing (see docs/SIGNING.md):
+# - Azure Trusted Signing: set the secrets AZURE_TENANT_ID, AZURE_CLIENT_ID,
+#   AZURE_CLIENT_SECRET, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT and
+#   AZURE_SIGNING_PROFILE; every file is then signed in CI.
+# - Otherwise the build is unsigned; scripts/publish-signed.ps1 can replace
+#   the release files with ones signed on your own PC.
 name: Release
 
 on:
@@ -18,10 +22,10 @@ jobs:
   build:
     runs-on: windows-latest
     env:
-      LANES_SIGN_MODE: ${{ secrets.LANES_SIGN_MODE || 'none' }}
-      LANES_SIGN_THUMBPRINT: ${{ secrets.LANES_SIGN_THUMBPRINT }}
-      LANES_SIGN_DLIB: ${{ secrets.LANES_SIGN_DLIB }}
-      LANES_SIGN_METADATA: ${{ secrets.LANES_SIGN_METADATA }}
+      # Read by Azure.CodeSigning.Dlib (DefaultAzureCredential).
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
 
@@ -59,6 +63,30 @@ jobs:
 
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Set up code signing
+        shell: pwsh
+        env:
+          SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+        run: |
+          if (-not $env:AZURE_CLIENT_ID -or -not $env:SIGNING_ACCOUNT) {
+            "LANES_SIGN_MODE=none" >> $env:GITHUB_ENV
+            Write-Host "No Azure Trusted Signing secrets: building unsigned."
+            exit 0
+          }
+          $dir = Join-Path $env:RUNNER_TEMP 'trusted-signing'
+          nuget install Microsoft.Trusted.Signing.Client -OutputDirectory $dir -NonInteractive | Out-Null
+          $dlib = Get-ChildItem -Recurse $dir -Filter Azure.CodeSigning.Dlib.dll | Where-Object FullName -match '\\x64\\' | Select-Object -First 1
+          if (-not $dlib) { throw "Azure.CodeSigning.Dlib.dll not found" }
+          $meta = Join-Path $env:RUNNER_TEMP 'trusted-signing-metadata.json'
+          @{ Endpoint = $env:SIGNING_ENDPOINT; CodeSigningAccountName = $env:SIGNING_ACCOUNT; CertificateProfileName = $env:SIGNING_PROFILE } |
+            ConvertTo-Json | Set-Content -Encoding utf8NoBOM $meta
+          "LANES_SIGN_MODE=azure" >> $env:GITHUB_ENV
+          "LANES_SIGN_DLIB=$($dlib.FullName)" >> $env:GITHUB_ENV
+          "LANES_SIGN_METADATA=$meta" >> $env:GITHUB_ENV
+          Write-Host "Signing with Azure Trusted Signing ($env:SIGNING_ACCOUNT / $env:SIGNING_PROFILE)."
 
       - name: Build installer
         run: pnpm tauri build

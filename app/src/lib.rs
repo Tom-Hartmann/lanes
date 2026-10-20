@@ -12,6 +12,7 @@ mod library;
 mod logbus;
 mod overlay;
 mod settings;
+mod share;
 mod state;
 mod tray;
 mod window;
@@ -163,6 +164,10 @@ pub fn run() {
             commands::open_output_folder,
             commands::remux_clip,
             commands::trim_clip,
+            commands::clip_tracks,
+            commands::share_clip,
+            commands::copy_clip_file,
+            commands::drag_clip,
             commands::set_run_as_admin,
             commands::relaunch_as_admin,
         ])

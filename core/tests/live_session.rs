@@ -172,3 +172,17 @@ fn detect_game_now() {
     eprintln!("foreground: {:?}", fg.map(|w| (w.exe, w.fullscreen)));
     eprintln!("detected: {:?}", lanes_core::games::detect(&[], true).map(|g| (g.name, g.exe, g.pid, g.fullscreen)));
 }
+
+#[test]
+#[ignore = "needs LANES_SHARE_SRC"]
+fn share_file() {
+    let Some(src) = std::env::var_os("LANES_SHARE_SRC") else { return };
+    let src = PathBuf::from(src);
+    for (name, max) in [("limit", Some(10 * 1024 * 1024u64)), ("copy", None)] {
+        let dst = std::env::temp_dir().join(format!("lanes-share-{name}.mp4"));
+        let opts = lanes_core::share::ShareOptions { audio_tracks: None, max_bytes: max, backend: lanes_core::config::EncoderBackend::Nvenc };
+        let t = std::time::Instant::now();
+        let r = lanes_core::share::export(&src, &dst, &opts);
+        eprintln!("{name}: {r:?} in {:.1} s", t.elapsed().as_secs_f64());
+    }
+}
