@@ -456,6 +456,10 @@ impl Control {
                 }),
             )?)
         };
+        let mut audio = audio;
+        if let Some(a) = audio.as_mut() {
+            a.set_game(self.game.as_ref().map(|g| g.pid).filter(|&p| p != 0));
+        }
         drop(packets_tx);
 
         let internal = self.internal.0.clone();
@@ -793,6 +797,10 @@ impl Control {
             return;
         }
         self.game = game;
+        let pid = self.game.as_ref().map(|g| g.pid).filter(|&p| p != 0);
+        if let Some(a) = self.session.as_mut().and_then(|s| s.audio.as_mut()) {
+            a.set_game(pid);
+        }
         self.retarget_follow();
     }
 

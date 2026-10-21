@@ -182,9 +182,15 @@ pub enum SourceKind {
     SystemOutput {
         #[serde(default)]
         device: Option<String>,
+        /// Leave out one application (e.g. the music player, captured on its
+        /// own lane). Uses process loopback in exclude mode while that app runs.
+        #[serde(default)]
+        exclude: Option<String>,
     },
     /// Audio from one application and its child processes (process loopback, Windows 10 2004+).
     App { exe: String },
+    /// The detected game's own audio only; follows whichever game is running.
+    Game,
     /// A microphone or other input device. `device: None` follows the default device.
     Input {
         #[serde(default)]
@@ -251,7 +257,7 @@ impl Default for AudioLayout {
                 AudioSource {
                     id: "system".into(),
                     name: "System audio".into(),
-                    kind: SourceKind::SystemOutput { device: None },
+                    kind: SourceKind::SystemOutput { device: None, exclude: None },
                     volume_db: 0.0,
                     muted: false,
                     mono: false,

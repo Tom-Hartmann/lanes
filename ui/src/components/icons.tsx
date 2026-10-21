@@ -138,6 +138,14 @@ export const IconApp = (p: IconProps) => (
     <path d="M3 9h18" />
   </Svg>
 );
+export const IconGamepad = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2" y="7" width="20" height="11" rx="5" />
+    <path d="M7 11v3M5.5 12.5h3" />
+    <circle cx="15.5" cy="12" r="0.8" fill="currentColor" />
+    <circle cx="17.5" cy="14" r="0.8" fill="currentColor" />
+  </Svg>
+);
 export const IconScissors = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="6" cy="6" r="3" />

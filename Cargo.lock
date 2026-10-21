@@ -1980,7 +1980,7 @@ dependencies = [
 
 [[package]]
 name = "lanes-app"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "lanes-core",
  "lanes-platform",
@@ -1997,7 +1997,7 @@ dependencies = [
 
 [[package]]
 name = "lanes-core"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "crossbeam-channel",
  "ffmpeg-next",
@@ -2012,7 +2012,7 @@ dependencies = [
 
 [[package]]
 name = "lanes-platform"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "log",
  "thiserror 2.0.21",

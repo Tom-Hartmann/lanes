@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { IconPlay } from "../../components/icons";
-import { Badge } from "../../components/ui";
+import { Badge, cx } from "../../components/ui";
 import { formatBytes, formatDate, formatDuration } from "../../lib/format";
 import type { ClipInfo } from "../../lib/ipc";
 import { clipThumbnail } from "./thumbnails";
@@ -42,24 +42,42 @@ function useLazyThumbnail(path: string) {
   return { ref, src };
 }
 
-export function ClipCard({ clip, onOpen }: { clip: ClipInfo; onOpen: () => void }) {
+interface Props {
+  clip: ClipInfo;
+  onOpen: () => void;
+  selected: boolean;
+  /** Something is selected: a click toggles instead of opening. */
+  selecting: boolean;
+  onToggle: (range: boolean) => void;
+}
+
+export function ClipCard({ clip, onOpen, selected, selecting, onToggle }: Props) {
   const { ref, src } = useLazyThumbnail(clip.path);
   return (
     <div
       ref={ref}
-      className="group overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900/60 transition-colors hover:border-zinc-600"
+      className={cx(
+        "group relative overflow-hidden rounded-lg border bg-zinc-900/60 transition-colors",
+        selected ? "border-sky-500 ring-1 ring-sky-500" : "border-zinc-800 hover:border-zinc-600",
+      )}
     >
-      <button type="button" onClick={onOpen} className="relative block aspect-video w-full bg-zinc-950">
+      <button
+        type="button"
+        onClick={(e) => (selecting || e.ctrlKey || e.shiftKey ? onToggle(e.shiftKey) : onOpen())}
+        className="relative block aspect-video w-full bg-zinc-950"
+      >
         {src ? (
           <img src={src} alt="" draggable={false} className="h-full w-full object-cover" loading="lazy" />
         ) : (
           <span className="absolute inset-0 animate-pulse bg-zinc-900" />
         )}
-        <span className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition group-hover:bg-black/30 group-hover:opacity-100">
-          <span className="rounded-full bg-black/60 p-2.5 text-white">
-            <IconPlay size={18} />
+        {!selecting && (
+          <span className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition group-hover:bg-black/30 group-hover:opacity-100">
+            <span className="rounded-full bg-black/60 p-2.5 text-white">
+              <IconPlay size={18} />
+            </span>
           </span>
-        </span>
+        )}
         <span className="absolute top-1.5 left-1.5">
           <Badge tone={clip.kind === "clip" ? "sky" : "neutral"}>{clip.kind === "clip" ? "Clip" : "Recording"}</Badge>
         </span>
@@ -69,6 +87,19 @@ export function ClipCard({ clip, onOpen }: { clip: ClipInfo; onOpen: () => void 
           </span>
         )}
       </button>
+      <label
+        title="Select (Shift-click selects a range)"
+        onClick={(e) => {
+          e.preventDefault();
+          onToggle(e.shiftKey);
+        }}
+        className={cx(
+          "absolute top-1 right-1 flex h-7 w-7 cursor-pointer items-center justify-center rounded-md bg-black/50 transition-opacity",
+          selected || selecting ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+        )}
+      >
+        <input type="checkbox" checked={selected} readOnly className="pointer-events-none h-4 w-4 accent-sky-500" />
+      </label>
       <div className="px-2.5 py-1.5">
         <div className="truncate text-sm text-zinc-200" title={clip.fileName}>
           {clip.fileName}

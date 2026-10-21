@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Button, Card, cx, Segmented, Select, TextInput } from "../../components/ui";
 import type { AudioApp, AudioDevices, SourceKind, SourceKindType } from "../../lib/ipc";
 import { addSource, MAX_LANES } from "./audioOps";
+import { excludeOptions, uniqueApps } from "./SourceIcon";
 import type { EditAudio } from "./LaneCard";
 
 interface Props {
@@ -16,6 +17,7 @@ interface Props {
 const DEFAULT_NAME: Record<SourceKindType, string> = {
   systemOutput: "Desktop audio",
   app: "App",
+  game: "Game audio",
   input: "Microphone",
 };
 
@@ -23,19 +25,12 @@ export function AddSource({ devices, apps, perAppSupported, laneCount, edit, onD
   const [type, setType] = useState<SourceKindType>("systemOutput");
   const [device, setDevice] = useState("");
   const [exe, setExe] = useState("");
+  const [exclude, setExclude] = useState("");
   const [name, setName] = useState("");
   const [ownLane, setOwnLane] = useState(true);
 
   // Unique apps, active ones first.
-  const appList = useMemo(() => {
-    const map = new Map<string, AudioApp>();
-    for (const a of apps ?? []) {
-      const key = a.exe.toLowerCase();
-      const prev = map.get(key);
-      if (!prev || (a.active && !prev.active)) map.set(key, a);
-    }
-    return [...map.values()].sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
-  }, [apps]);
+  const appList = useMemo(() => uniqueApps(apps), [apps]);
 
   const pickedApp = appList.find((a) => a.exe.toLowerCase() === exe.trim().toLowerCase());
   const deviceList = (type === "input" ? devices?.inputs : devices?.outputs) ?? [];
@@ -45,12 +40,16 @@ export function AddSource({ devices, apps, perAppSupported, laneCount, edit, onD
       ? exe.trim()
         ? { type: "app", exe: exe.trim() }
         : null
-      : { type, device: device === "" ? null : device };
+      : type === "game"
+        ? { type: "game" }
+        : type === "input"
+          ? { type, device: device === "" ? null : device }
+          : { type, device: device === "" ? null : device, exclude: exclude === "" ? null : exclude };
 
   const defaultName =
     type === "app"
       ? (pickedApp?.name ?? exe.trim().replace(/\.exe$/i, "")) || DEFAULT_NAME.app
-      : device
+      : device && type !== "game"
         ? (deviceList.find((d) => d.id === device)?.name ?? DEFAULT_NAME[type])
         : DEFAULT_NAME[type];
 
@@ -67,15 +66,30 @@ export function AddSource({ devices, apps, perAppSupported, laneCount, edit, onD
         onChange={(t) => {
           setType(t);
           setDevice("");
+          setExclude("");
         }}
         options={[
           { value: "systemOutput", label: "System output" },
           { value: "app", label: "App", disabled: !perAppSupported },
+          { value: "game", label: "Game", disabled: !perAppSupported },
           { value: "input", label: "Input / mic" },
         ]}
       />
 
-      {type !== "app" && (
+      {type === "game" && (
+        <p className="text-xs text-zinc-500">
+          Only the detected game's sound: music, Discord and other apps stay out. Switches to whichever game is running.
+        </p>
+      )}
+
+      {type === "systemOutput" && perAppSupported && (
+        <label className="flex items-center gap-2 text-sm">
+          <span className="shrink-0 text-zinc-400">Leave out</span>
+          <Select value={exclude} onChange={setExclude} className="min-w-0 flex-1" options={excludeOptions(apps, null)} />
+        </label>
+      )}
+
+      {(type === "systemOutput" || type === "input") && (
         <Select
           value={device}
           onChange={setDevice}

@@ -15,6 +15,8 @@ pub struct ShareOptions {
     /// Audio tracks (0-based among the file's audio streams) mixed into the
     /// single output track; `None` = all.
     pub audio_tracks: Option<Vec<usize>>,
+    /// Volume per audio track in dB (same indexing); missing entries are 0 dB.
+    pub gains_db: Vec<f32>,
     /// Size limit for the whole file; the video is re-encoded only if needed.
     pub max_bytes: Option<u64>,
     /// Hardware encoder for re-encoding (falls back to x264). Output is H.264,
@@ -44,9 +46,10 @@ pub fn export(src: &Path, dst: &Path, opts: &ShareOptions) -> Result<ShareResult
         .filter(|(_, st)| unsafe { (*(***st).codecpar).codec_type == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO })
         .map(|(i, _)| i)
         .collect();
-    let chosen: Vec<usize> = match &opts.audio_tracks {
-        None => audio_streams.clone(),
-        Some(sel) => sel.iter().filter_map(|&k| audio_streams.get(k).copied()).collect(),
+    // (track, stream index) pairs.
+    let chosen: Vec<(usize, usize)> = match &opts.audio_tracks {
+        None => audio_streams.iter().copied().enumerate().collect(),
+        Some(sel) => sel.iter().filter_map(|&k| audio_streams.get(k).map(|&i| (k, i))).collect(),
     };
     // SAFETY: valid context.
     let duration = (unsafe { (*input.0).duration } as f64 / f64::from(ffi::AV_TIME_BASE)).max(0.5);
@@ -54,13 +57,14 @@ pub fn export(src: &Path, dst: &Path, opts: &ShareOptions) -> Result<ShareResult
 
     // Audio: decode the chosen tracks, mix, encode one AAC track.
     let mut mix: Vec<f32> = Vec::new();
-    for &idx in &chosen {
+    for &(k, idx) in &chosen {
+        let gain = crate::audio::dsp::gain_for(opts.gains_db.get(k).copied().unwrap_or(0.0), false);
         let samples = decode_audio(src, idx)?;
         if mix.len() < samples.len() {
             mix.resize(samples.len(), 0.0);
         }
         for (m, s) in mix.iter_mut().zip(&samples) {
-            *m += s;
+            *m += s * gain;
         }
     }
     crate::audio::dsp::soft_clip(&mut mix);

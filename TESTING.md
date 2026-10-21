@@ -79,6 +79,8 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 - [ ] Meters move with sound
 - [ ] Adding a lane applies to the next recording
 - [ ] A/V sync by ear/eye (clap test) — timestamps verified: audio within 20 ms at start and end
+- [ ] "Game" source: only the game's sound, follows the detected game (waits with "no game detected")
+- [ ] System audio with "Leave out app" (e.g. Spotify on its own lane at a lower volume): the app is absent from the system lane, changed live while buffering
 
 ## Devices
 
@@ -98,6 +100,9 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 - [ ] Trim (lossless, snaps to keyframes)
 - [x] Convert to MP4 (MKV clips), and MKV playback in the viewer
 - [ ] Delete goes to the recycle bin
+- [ ] Multi-select: checkbox on hover, click/Ctrl-click/Shift-click, "Select all", Ctrl+A, Esc, "Delete N" to the recycle bin
+- [ ] Audio mix in the viewer: every lane audible, per-lane volume / mute / solo, stays in sync when seeking and in slow motion
+- [ ] Share copy uses the audio mix (lane gains and mutes)
 - [ ] Show in folder / open output folder
 - [ ] Search and the clip/recording filter
 - [ ] Slow motion: speed bar 0.1x-2x, pitch stays natural, speed remembered

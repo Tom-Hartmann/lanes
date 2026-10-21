@@ -7,7 +7,7 @@ import type { SaveMode } from "../../store/settingsStore";
 import { patchSource, removeSource } from "./audioOps";
 import { startSourceDrag } from "./dnd";
 import type { EditAudio } from "./LaneCard";
-import { appActivity, describeKind, KIND_LABEL, SourceIcon } from "./SourceIcon";
+import { appActivity, describeKind, excludeOptions, KIND_LABEL, SourceIcon } from "./SourceIcon";
 
 interface Props {
   source: AudioSource;
@@ -25,7 +25,7 @@ const ACTIVITY = {
 } as const;
 
 function DevicePicker({ kind, devices, onChange }: { kind: SourceKind; devices: AudioDevices | null; onChange: (k: SourceKind) => void }) {
-  if (kind.type === "app") return null;
+  if (kind.type === "app" || kind.type === "game") return null;
   const list = (kind.type === "input" ? devices?.inputs : devices?.outputs) ?? [];
   const value = kind.device ?? "";
   const known = value === "" || list.some((d) => d.id === value);
@@ -33,7 +33,7 @@ function DevicePicker({ kind, devices, onChange }: { kind: SourceKind; devices: 
     <Select
       value={value}
       className="min-w-0 flex-1"
-      onChange={(device) => onChange({ type: kind.type, device: device === "" ? null : device })}
+      onChange={(d) => onChange({ ...kind, device: d === "" ? null : d })}
       options={[
         { value: "", label: "Default device (follows Windows)" },
         ...list.map((d) => ({ value: d.id, label: d.name + (d.isDefault ? " (current default)" : "") })),
@@ -125,10 +125,25 @@ export function SourceCard({ source: s, laneNames, devices, apps, perAppSupporte
                 className="min-w-0 flex-1"
               />
             </div>
+          ) : s.kind.type === "game" ? (
+            <p className="text-xs text-zinc-500">Records only the detected game's sound and follows whichever game is running.</p>
           ) : (
             <div className="flex items-center gap-2">
               <span className="w-28 shrink-0 text-zinc-400">Device</span>
               <DevicePicker kind={s.kind} devices={devices} onChange={(kind) => patch({ kind })} />
+            </div>
+          )}
+          {s.kind.type === "systemOutput" && perAppSupported && (
+            <div className="flex items-center gap-2">
+              <span className="w-28 shrink-0 text-zinc-400" title="E.g. your music player, so it can sit on its own lane at its own volume">
+                Leave out app
+              </span>
+              <Select
+                value={s.kind.exclude ?? ""}
+                className="min-w-0 flex-1"
+                onChange={(x) => s.kind.type === "systemOutput" && patch({ kind: { ...s.kind, exclude: x === "" ? null : x } })}
+                options={excludeOptions(apps, s.kind.exclude)}
+              />
             </div>
           )}
           <div className="flex items-center gap-2">

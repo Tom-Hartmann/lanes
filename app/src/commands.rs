@@ -259,6 +259,43 @@ pub async fn prepare_clip_playback(app: AppHandle, path: String) -> CmdResult<St
     .await
 }
 
+/// Each audio track of a clip as its own file (cached), for the viewer's
+/// mixer: the video element only plays the first track.
+#[tauri::command]
+pub async fn clip_audio_preview(app: AppHandle, path: String) -> CmdResult<Vec<String>> {
+    blocking(move || {
+        let p = checked_path(&app.state::<AppState>(), &path)?;
+        let cache = state::playback_cache_dir();
+        std::fs::create_dir_all(&cache).map_err(err)?;
+        let meta = std::fs::metadata(&p).map_err(err)?;
+        let stamp = meta.modified().ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+        let base = format!("{}_{stamp}_{}", naming::sanitize(&p.file_stem().unwrap_or_default().to_string_lossy()), meta.len());
+        prune_cache(&cache, &base);
+        let count = lanes_core::media::audio_track_titles(&p).map_err(err)?.len();
+        (0..count)
+            .map(|k| {
+                let out = cache.join(format!("{base}_a{k}.mp4"));
+                if !out.exists() {
+                    lanes_core::media::extract_audio(&p, k, &out).map_err(err)?;
+                }
+                Ok(out.to_string_lossy().into_owned())
+            })
+            .collect()
+    })
+    .await
+}
+
+/// Drops playback cache files older than a few days, except `keep*` (the clip being opened).
+fn prune_cache(dir: &Path, keep: &str) {
+    let max_age = std::time::Duration::from_secs(3 * 24 * 3600);
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > max_age);
+        if old && !entry.file_name().to_string_lossy().starts_with(keep) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn delete_clip(app: AppHandle, path: String) -> CmdResult<()> {
     blocking(move || {
@@ -326,7 +363,13 @@ pub async fn clip_tracks(app: AppHandle, path: String) -> CmdResult<Vec<String>>
 /// Makes a share copy in `<clip folder>\Shared`: one mixed audio track,
 /// re-encoded only if needed to fit `max_mb` (0 = no limit).
 #[tauri::command]
-pub async fn share_clip(app: AppHandle, path: String, tracks: Option<Vec<usize>>, max_mb: u32) -> CmdResult<lanes_core::share::ShareResult> {
+pub async fn share_clip(
+    app: AppHandle,
+    path: String,
+    tracks: Option<Vec<usize>>,
+    gains_db: Option<Vec<f32>>,
+    max_mb: u32,
+) -> CmdResult<lanes_core::share::ShareResult> {
     blocking(move || {
         let state = app.state::<AppState>();
         let p = checked_path(&state, &path)?;
@@ -339,6 +382,7 @@ pub async fn share_clip(app: AppHandle, path: String, tracks: Option<Vec<usize>>
             .map_or(lanes_core::config::EncoderBackend::X264, |(b, _)| b);
         let opts = lanes_core::share::ShareOptions {
             audio_tracks: tracks,
+            gains_db: gains_db.unwrap_or_default(),
             max_bytes: (max_mb > 0).then(|| u64::from(max_mb) * 1024 * 1024),
             backend,
         };

@@ -180,7 +180,7 @@ fn share_file() {
     let src = PathBuf::from(src);
     for (name, max) in [("limit", Some(10 * 1024 * 1024u64)), ("copy", None)] {
         let dst = std::env::temp_dir().join(format!("lanes-share-{name}.mp4"));
-        let opts = lanes_core::share::ShareOptions { audio_tracks: None, max_bytes: max, backend: lanes_core::config::EncoderBackend::Nvenc };
+        let opts = lanes_core::share::ShareOptions { audio_tracks: None, gains_db: Vec::new(), max_bytes: max, backend: lanes_core::config::EncoderBackend::Nvenc };
         let t = std::time::Instant::now();
         let r = lanes_core::share::export(&src, &dst, &opts);
         eprintln!("{name}: {r:?} in {:.1} s", t.elapsed().as_secs_f64());

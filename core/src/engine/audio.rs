@@ -42,6 +42,8 @@ pub struct AudioSession {
     chunks: Sender<Chunk>,
     sources: HashMap<String, RunningSource>,
     on_status: StatusCallback,
+    /// The detected game's process, for `SourceKind::Game` sources.
+    game_pid: Option<u32>,
     /// Sources currently reported as "not running", so the notice is sent once.
     waiting: std::collections::HashSet<String>,
     mixer_cmd: Sender<MixerCommand>,
@@ -91,6 +93,7 @@ impl AudioSession {
             sources: HashMap::new(),
             on_status,
             waiting: std::collections::HashSet::new(),
+            game_pid: None,
             mixer_cmd,
             mixer: Some(mixer),
             encoder: Some(encoder),
@@ -106,22 +109,35 @@ impl AudioSession {
         self.sync_sources();
     }
 
+    /// Points `Game` sources at the detected game's process (or nothing).
+    pub fn set_game(&mut self, pid: Option<u32>) {
+        if self.game_pid != pid {
+            self.game_pid = pid;
+            self.sync_sources();
+        }
+    }
+
     /// Starts/stops captures to match the layout, and follows per-app sources
     /// to their current process (apps restart; Discord updates itself...).
     /// Called on changes and periodically by the engine.
     pub fn sync_sources(&mut self) {
-        let procs = if self.layout.sources.iter().any(|s| matches!(s.kind, SourceKind::App { .. })) {
+        let needs_procs = |k: &SourceKind| matches!(k, SourceKind::App { .. } | SourceKind::SystemOutput { exclude: Some(_), .. });
+        let procs = if self.layout.sources.iter().any(|s| needs_procs(&s.kind)) {
             windows_list::processes()
         } else {
             Vec::new()
         };
         let wanted: HashMap<String, Option<CaptureSpec>> =
-            self.layout.sources.iter().map(|s| (s.id.clone(), spec_for(s, &procs))).collect();
+            self.layout.sources.iter().map(|s| (s.id.clone(), spec_for(s, &procs, self.game_pid))).collect();
         self.sources.retain(|id, running| wanted.get(id).is_some_and(|w| w.as_ref() == Some(&running.spec)));
         for (id, spec) in wanted {
             let Some(spec) = spec else {
                 if self.waiting.insert(id.clone()) {
-                    (self.on_status)(&id, CaptureStatus::Waiting { reason: "application is not running".into() });
+                    let reason = match self.layout.sources.iter().find(|s| s.id == id).map(|s| &s.kind) {
+                        Some(SourceKind::Game) => "no game detected",
+                        _ => "application is not running",
+                    };
+                    (self.on_status)(&id, CaptureStatus::Waiting { reason: reason.into() });
                 }
                 continue;
             };
@@ -168,11 +184,19 @@ impl Drop for AudioSession {
     }
 }
 
-fn spec_for(source: &AudioSource, procs: &[windows_list::ProcessEntry]) -> Option<CaptureSpec> {
+fn spec_for(source: &AudioSource, procs: &[windows_list::ProcessEntry], game_pid: Option<u32>) -> Option<CaptureSpec> {
     Some(match &source.kind {
-        SourceKind::SystemOutput { device } => CaptureSpec::Loopback { device: device.clone() },
+        SourceKind::SystemOutput { device, exclude } => {
+            // Excluding needs process loopback, which covers all output; it
+            // only kicks in while the excluded app actually runs.
+            match exclude.as_deref().and_then(|exe| windows_list::root_pids(procs, exe).first().copied()) {
+                Some(pid) => CaptureSpec::Process { pid, include: false },
+                None => CaptureSpec::Loopback { device: device.clone() },
+            }
+        }
         SourceKind::Input { device } => CaptureSpec::Input { device: device.clone() },
-        SourceKind::App { exe } => CaptureSpec::Process { pid: *windows_list::root_pids(procs, exe).first()? },
+        SourceKind::App { exe } => CaptureSpec::Process { pid: *windows_list::root_pids(procs, exe).first()?, include: true },
+        SourceKind::Game => CaptureSpec::Process { pid: game_pid?, include: true },
     })
 }
 

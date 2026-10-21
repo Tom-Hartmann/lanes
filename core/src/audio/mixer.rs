@@ -281,7 +281,7 @@ mod tests {
                 .map(|(id, lanes, vol)| AudioSource {
                     id: (*id).into(),
                     name: (*id).into(),
-                    kind: SourceKind::SystemOutput { device: None },
+                    kind: SourceKind::SystemOutput { device: None, exclude: None },
                     volume_db: *vol,
                     muted: false,
                     mono: false,

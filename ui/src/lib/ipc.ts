@@ -52,8 +52,11 @@ export interface VideoSettings {
 }
 
 export type SourceKind =
-  | { type: "systemOutput"; device: string | null }
+  /** `exclude`: leave out one app (process loopback in exclude mode while it runs). */
+  | { type: "systemOutput"; device: string | null; exclude: string | null }
   | { type: "app"; exe: string }
+  /** The detected game's own audio; follows whichever game is running. */
+  | { type: "game" }
   | { type: "input"; device: string | null };
 
 export interface AudioSource {
@@ -405,8 +408,10 @@ export const api = {
   /** Audio track names (lanes) of a clip. */
   clipTracks: (path: string) => invoke<string[]>("clip_tracks", { path }),
   /** Share copy with one mixed audio track (tracks: indices, null = all); maxMb 0 = no limit. */
-  shareClip: (path: string, tracks: number[] | null, maxMb: number) =>
-    invoke<ShareResult>("share_clip", { path, tracks, maxMb }),
+  shareClip: (path: string, tracks: number[] | null, gainsDb: number[] | null, maxMb: number) =>
+    invoke<ShareResult>("share_clip", { path, tracks, gainsDb, maxMb }),
+  /** Each audio track as its own cached file, for the viewer's lane mixer. */
+  clipAudioPreview: (path: string) => invoke<string[]>("clip_audio_preview", { path }),
   /** Clip on the clipboard as a file (Ctrl+V in Discord uploads it). */
   copyClipFile: (path: string) => invoke<void>("copy_clip_file", { path }),
   /** Native drag of the file; call while the mouse button is held. */

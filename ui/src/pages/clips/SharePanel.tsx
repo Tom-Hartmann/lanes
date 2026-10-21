@@ -6,6 +6,7 @@ import { api, errorMessage, type ClipInfo, type ShareResult } from "../../lib/ip
 import { notify } from "../../store/noticeStore";
 import { useSettingsStore } from "../../store/settingsStore";
 import { useStatusStore } from "../../store/statusStore";
+import type { MixChoice } from "./LaneMixer";
 
 const SIZE_OPTIONS = [
   { value: "10", label: "10 MB (Discord)" },
@@ -80,31 +81,15 @@ async function sendToDiscord(webhook: string, path: string, message: string, onP
   });
 }
 
-export function SharePanel({ clip }: { clip: ClipInfo }) {
+export function SharePanel({ clip, mix, mixed, hasAudio }: { clip: ClipInfo; mix: MixChoice; mixed: boolean; hasAudio: boolean }) {
   const settings = useSettingsStore((s) => s.settings);
   const game = useStatusStore((s) => s.status?.game?.name);
-  const [tracks, setTracks] = useState<string[] | null>(null);
-  const [selected, setSelected] = useState<boolean[]>([]);
   const [maxMb, setMaxMb] = useState(String(settings?.share.maxMb ?? 10));
   const [busy, setBusy] = useState<"export" | "send" | null>(null);
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<ShareResult | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    setResult(null);
-    api.clipTracks(clip.path).then(
-      (t) => {
-        if (!alive) return;
-        setTracks(t);
-        setSelected(t.map(() => true));
-      },
-      () => alive && setTracks([]),
-    );
-    return () => {
-      alive = false;
-    };
-  }, [clip.path]);
+  useEffect(() => setResult(null), [clip.path]);
 
   const webhook = settings?.share.discordWebhook ?? "";
   const canSend = isDiscordWebhook(webhook);
@@ -112,9 +97,8 @@ export function SharePanel({ clip }: { clip: ClipInfo }) {
   const exportCopy = async () => {
     setBusy("export");
     try {
-      const all = selected.every(Boolean);
-      const idx = selected.flatMap((on, i) => (on ? [i] : []));
-      const r = await api.shareClip(clip.path, all ? null : idx, Number(maxMb));
+      if (mix.tracks?.length === 0 && hasAudio) throw new Error("every lane is muted in the audio mix");
+      const r = await api.shareClip(clip.path, mix.tracks, mixed ? mix.gainsDb : null, Number(maxMb));
       setResult(r);
     } catch (err) {
       notify({ kind: "error", title: "Share copy failed", body: errorMessage(err) });
@@ -146,26 +130,9 @@ export function SharePanel({ clip }: { clip: ClipInfo }) {
     <div className="flex flex-col gap-3 border-t border-zinc-800 px-4 py-3">
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-sm font-medium text-zinc-300">Share</span>
-        {tracks === null ? (
-          <Spinner />
-        ) : tracks.length > 0 ? (
-          <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-300">
-            <span className="text-xs text-zinc-500">Mix into one track:</span>
-            {tracks.map((t, i) => (
-              <label key={i} className="flex items-center gap-1.5">
-                <input
-                  type="checkbox"
-                  className="accent-sky-500"
-                  checked={selected[i] ?? true}
-                  onChange={(e) => setSelected((s) => s.map((v, j) => (j === i ? e.target.checked : v)))}
-                />
-                {t}
-              </label>
-            ))}
-          </div>
-        ) : (
-          <span className="text-xs text-zinc-500">No audio</span>
-        )}
+        <span className="text-xs text-zinc-500">
+          {!hasAudio ? "No audio" : mixed ? "Uses your audio mix above" : "All lanes mixed into one track"}
+        </span>
         <div className="ml-auto flex items-center gap-2">
           <Select value={maxMb} onChange={setMaxMb} options={SIZE_OPTIONS} />
           <Button size="sm" onClick={() => void exportCopy()} disabled={busy !== null}>
@@ -174,7 +141,8 @@ export function SharePanel({ clip }: { clip: ClipInfo }) {
         </div>
       </div>
       <p className="text-xs text-zinc-500">
-        Discord and most players only play the first audio track, so the share copy mixes the lanes you pick into one.
+        Discord and most players only play the first audio track, so the share copy mixes the lanes into one (as set in
+        the audio mix: mute or turn down a lane to change it).
         It is only re-encoded (on the GPU) when it has to fit the size limit.
       </p>
       {result && (

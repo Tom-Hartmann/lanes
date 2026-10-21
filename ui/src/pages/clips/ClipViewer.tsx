@@ -7,6 +7,7 @@ import { api, errorMessage, type ClipInfo } from "../../lib/ipc";
 import { actionForKey, keyLabel, resolveViewerKeys, VIEWER_ACTIONS } from "../../lib/viewerKeys";
 import { attempt, notify } from "../../store/noticeStore";
 import { useSettingsStore } from "../../store/settingsStore";
+import { LaneMixerPanel, useLaneMixer } from "./LaneMixer";
 import { forgetThumbnail } from "./thumbnails";
 import { SharePanel } from "./SharePanel";
 import { TrimBar } from "./TrimBar";
@@ -66,6 +67,7 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
     saveSpeed(v);
   };
   const show = (text: string) => setFlash({ text, id: Date.now() });
+  const mixer = useLaneMixer(video, src, clip.path);
 
   useEffect(() => {
     let alive = true;
@@ -354,6 +356,8 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
             </button>
           </div>
 
+          <LaneMixerPanel mixer={mixer} />
+
           <div className="space-y-3 p-4">
             <div className="flex items-center gap-2 text-sm text-zinc-300">
               <IconScissors size={14} /> Trim
@@ -411,7 +415,7 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
           </div>
         </div>
 
-        <SharePanel clip={clip} />
+        <SharePanel clip={clip} mix={mixer.choice} mixed={mixer.changed} hasAudio={(mixer.titles?.length ?? 0) > 0} />
 
         <footer className="flex flex-wrap items-center gap-2 border-t border-zinc-800 px-4 py-2.5">
           <Button size="sm" variant="primary" disabled={!trimmed || busy !== null || duration <= 0} onClick={() => void trim()}>

@@ -165,6 +165,7 @@ pub fn run() {
             commands::remux_clip,
             commands::trim_clip,
             commands::clip_tracks,
+            commands::clip_audio_preview,
             commands::share_clip,
             commands::copy_clip_file,
             commands::drag_clip,

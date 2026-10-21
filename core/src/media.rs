@@ -90,7 +90,25 @@ pub fn duration(path: &Path) -> Option<f64> {
 
 /// Copies all streams into a new container (e.g. MKV â†’ MP4 with faststart).
 pub fn remux(src: &Path, dst: &Path) -> Result<()> {
-    copy_range(src, dst, None)
+    copy_range(src, dst, None, None)
+}
+
+/// Copies audio track `track` (0-based among the audio streams) alone into
+/// `dst`, timed like the video of a remux so the two play in sync.
+pub fn extract_audio(src: &Path, track: usize, dst: &Path) -> Result<()> {
+    let idx = {
+        let input = Input::open(src)?;
+        input
+            .streams()
+            .iter()
+            .enumerate()
+            // SAFETY: valid streams of the open input.
+            .filter(|(_, st)| unsafe { (*(***st).codecpar).codec_type == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO })
+            .nth(track)
+            .map(|(i, _)| i)
+            .ok_or_else(|| Error::Invalid(format!("no audio track {track}")))?
+    };
+    copy_range(src, dst, None, Some(idx))
 }
 
 /// Lossless cut: starts at the keyframe at or before `start` and ends after
@@ -99,10 +117,11 @@ pub fn trim(src: &Path, dst: &Path, start: f64, end: f64) -> Result<()> {
     if end <= start {
         return Err(Error::Invalid("the end must be after the start".into()));
     }
-    copy_range(src, dst, Some((start, end)))
+    copy_range(src, dst, Some((start, end)), None)
 }
 
-fn copy_range(src: &Path, dst: &Path, range: Option<(f64, f64)>) -> Result<()> {
+/// `only`: write just this input stream (timing still follows the video).
+fn copy_range(src: &Path, dst: &Path, range: Option<(f64, f64)>, only: Option<usize>) -> Result<()> {
     let input = Input::open(src)?;
     let video = input.video_stream();
     let mut infos = Vec::new();
@@ -120,7 +139,7 @@ fn copy_range(src: &Path, dst: &Path, range: Option<(f64, f64)>) -> Result<()> {
     }
     let tmp = dst.with_extension("partial");
     let container = crate::mux::Container::from_path(dst);
-    let result = copy_packets(&input, video, &infos, &tmp, container, range);
+    let result = copy_packets(&input, video, &infos, only, &tmp, container, range);
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -133,11 +152,17 @@ fn copy_packets(
     input: &Input,
     video: Option<usize>,
     infos: &[av::StreamInfo],
+    only: Option<usize>,
     tmp: &Path,
     container: crate::mux::Container,
     range: Option<(f64, f64)>,
 ) -> Result<()> {
-    let mut mux = crate::mux::Muxer::create(tmp, container, infos)?;
+    let written: Vec<av::StreamInfo> = match only {
+        Some(i) => infos.get(i).cloned().into_iter().collect(),
+        None => infos.to_vec(),
+    };
+    // The muxer skips packets of streams it was not given.
+    let mut mux = crate::mux::Muxer::create(tmp, container, &written)?;
     // Last dts written per input stream; muxers like MP4 reject repeats.
     let mut last_dts: Vec<Option<i64>> = vec![None; infos.len()];
 

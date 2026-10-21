@@ -21,8 +21,8 @@ use windows::Win32::Media::Audio::{
     AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
     AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
     IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient,
-    IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
-    VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
+    IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+    PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
     WAVEFORMATEXTENSIBLE_0, eCapture, eConsole, eRender,
 };
 use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
@@ -45,7 +45,8 @@ pub enum CaptureSpec {
     /// An input device (`None` = the current default, followed on change).
     Input { device: Option<String> },
     /// Audio rendered by a process and its children.
-    Process { pid: u32 },
+    /// Audio of a process tree (`include`), or of everything except it.
+    Process { pid: u32, include: bool },
 }
 
 /// 48 kHz interleaved stereo f32 samples whose first frame was captured at `time`.
@@ -163,7 +164,11 @@ impl Stream {
                 let (c, name) = activate_endpoint(device.as_deref(), false)?;
                 (c, false, name)
             }
-            CaptureSpec::Process { pid } => (activate_process(*pid)?, true, format!("process {pid}")),
+            CaptureSpec::Process { pid, include } => (
+                activate_process(*pid, *include)?,
+                true,
+                if *include { format!("process {pid}") } else { format!("everything except process {pid}") },
+            ),
         };
         let format = float_format();
         let mut flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
@@ -263,7 +268,7 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for Completion_Impl {
 }
 
 /// Activates a process-loopback client (VAD\Process_Loopback) for `pid` and its child processes.
-fn activate_process(pid: u32) -> Result<IAudioClient> {
+fn activate_process(pid: u32, include: bool) -> Result<IAudioClient> {
     if !crate::audio::process_loopback_supported() {
         return Err(Error::Unsupported("per-application audio needs Windows 10 version 2004 or later".into()));
     }
@@ -272,7 +277,11 @@ fn activate_process(pid: u32) -> Result<IAudioClient> {
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
             ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
                 TargetProcessId: pid,
-                ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+                ProcessLoopbackMode: if include {
+                    PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE
+                } else {
+                    PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE
+                },
             },
         },
     };

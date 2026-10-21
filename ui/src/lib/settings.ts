@@ -48,7 +48,7 @@ export function defaultAudio(): AudioLayout {
       { ...newLane("Mic"), id: "mic" },
     ],
     sources: [
-      { ...newSource("System audio", { type: "systemOutput", device: null }), id: "system", lanes: ["game"] },
+      { ...newSource("System audio", { type: "systemOutput", device: null, exclude: null }), id: "system", lanes: ["game"] },
       {
         ...newSource("Microphone", { type: "input", device: null }),
         id: "mic",
