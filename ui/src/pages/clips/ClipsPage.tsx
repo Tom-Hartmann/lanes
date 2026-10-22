@@ -28,6 +28,8 @@ export function ClipsPage() {
   const [game, setGame] = useState<string | null>(null);
   const [sort, setSort] = useState<Sort>("newest");
   const [open, setOpen] = useState<ClipInfo | null>(null);
+  /** A file to open once the list has it (a copy the viewer just saved). */
+  const [pendingOpen, setPendingOpen] = useState<string | null>(null);
   const clipSeq = useStatusStore((s) => s.clipSeq);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState<{ done: number; total: number } | null>(null);
@@ -68,6 +70,15 @@ export function ClipsPage() {
       )
       .sort(SORTS[sort]);
   }, [clips, filter, query, game, sort]);
+
+  useEffect(() => {
+    if (!pendingOpen || !clips) return;
+    const c = clips.find((x) => x.path.toLowerCase() === pendingOpen.toLowerCase());
+    if (c) {
+      setOpen(c);
+      setPendingOpen(null);
+    }
+  }, [clips, pendingOpen]);
 
   const totalBytes = shown.reduce((n, c) => n + c.sizeBytes, 0);
   const closeViewer = useCallback(() => setOpen(null), []);
@@ -236,7 +247,18 @@ export function ClipsPage() {
         </div>
       )}
 
-      {open && <ClipViewer clip={open} onClose={closeViewer} onChanged={() => void load()} />}
+      {open && (
+        <ClipViewer
+          key={open.path}
+          clip={open}
+          onClose={closeViewer}
+          onChanged={() => void load()}
+          onOpenPath={(path) => {
+            setPendingOpen(path);
+            void load();
+          }}
+        />
+      )}
     </div>
   );
 }

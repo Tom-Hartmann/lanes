@@ -31,11 +31,15 @@ struct Entry {
     /// The clip viewer's lane mix (opaque to the backend).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mix: Option<serde_json::Value>,
+    /// The viewer mix rendered into the file's mixed track (`None`: every
+    /// lane at 0 dB, as recorded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mix_baked: Option<serde_json::Value>,
 }
 
 impl Entry {
     fn new(kind: Kind) -> Self {
-        Self { kind, duration: None, size: 0, game: None, markers: Vec::new(), mix: None }
+        Self { kind, duration: None, size: 0, game: None, markers: Vec::new(), mix: None, mix_baked: None }
     }
 }
 
@@ -68,6 +72,7 @@ pub struct ClipInfo {
     pub game: String,
     pub markers: Vec<f64>,
     pub mix: Option<serde_json::Value>,
+    pub mix_baked: Option<serde_json::Value>,
 }
 
 pub struct Library {
@@ -125,7 +130,8 @@ impl Library {
                 .as_ref()
                 .map(|e| e.markers.iter().filter(|&&m| m >= start && m <= end).map(|m| m - start).collect())
                 .unwrap_or_default(),
-            mix: from.and_then(|e| e.mix),
+            mix: from.as_ref().and_then(|e| e.mix.clone()),
+            mix_baked: from.and_then(|e| e.mix_baked),
             ..Entry::new(kind)
         };
         index.insert(key(dst), entry);
@@ -136,6 +142,16 @@ impl Library {
     pub fn set_mix(&self, path: &Path, mix: Option<serde_json::Value>) {
         let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
         index.entry(key(path)).or_insert_with(|| Entry::new(Kind::Recording)).mix = mix;
+        self.save(&index);
+    }
+
+    /// A copy whose mixed track was rendered from `mix` (the viewer's lane
+    /// state): the viewer starts from it and knows the file already sounds so.
+    pub fn set_baked_mix(&self, path: &Path, mix: Option<serde_json::Value>) {
+        let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = index.entry(key(path)).or_insert_with(|| Entry::new(Kind::Clip));
+        entry.mix = mix.clone();
+        entry.mix_baked = mix;
         self.save(&index);
     }
 
@@ -190,6 +206,7 @@ impl Library {
                         .unwrap_or_default(),
                     markers: entry.markers.clone(),
                     mix: entry.mix.clone(),
+                    mix_baked: entry.mix_baked.clone(),
                 });
             }
         }

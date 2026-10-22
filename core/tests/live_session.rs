@@ -118,6 +118,16 @@ fn record_then_clip() {
     eprintln!("trimmed -> {t:.2} s");
     assert!(t > 0.5 && t < 3.0, "trimmed {t}");
 
+    // Edited copy: a cut plus a new mixed track (only the game lane in it).
+    let edited = dir.join("edited.mp4");
+    let spec = lanes_core::share::MixSpec { tracks: Some(vec![1]), gains_db: vec![0.0, -6.0] };
+    lanes_core::share::edited_copy(rec, &edited, Some((1.0, 2.5)), Some(&spec)).unwrap();
+    let titles = lanes_core::media::audio_track_titles(&edited).unwrap();
+    let e = lanes_core::media::duration(&edited).unwrap();
+    eprintln!("edited -> {e:.2} s, tracks {titles:?}");
+    assert_eq!(titles, [lanes_core::config::MIX_TRACK_TITLE, "Game", "Mic"]);
+    assert!(e > 0.5 && e < 3.0, "edited {e}");
+
     let stats = sink.stats.lock().unwrap().clone();
     if let Some(s) = stats.last() {
         eprintln!(
@@ -186,7 +196,7 @@ fn share_file() {
     let src = PathBuf::from(src);
     for (name, max) in [("limit", Some(10 * 1024 * 1024u64)), ("copy", None)] {
         let dst = std::env::temp_dir().join(format!("lanes-share-{name}.mp4"));
-        let opts = lanes_core::share::ShareOptions { audio_tracks: None, gains_db: Vec::new(), max_bytes: max, backend: lanes_core::config::EncoderBackend::Nvenc };
+        let opts = lanes_core::share::ShareOptions { mix: Default::default(), range: None, max_bytes: max, backend: lanes_core::config::EncoderBackend::Nvenc };
         let t = std::time::Instant::now();
         let r = lanes_core::share::export(&src, &dst, &opts);
         eprintln!("{name}: {r:?} in {:.1} s", t.elapsed().as_secs_f64());

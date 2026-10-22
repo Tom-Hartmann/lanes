@@ -90,7 +90,7 @@ pub fn duration(path: &Path) -> Option<f64> {
 
 /// Copies all streams into a new container (e.g. MKV â†’ MP4 with faststart).
 pub fn remux(src: &Path, dst: &Path) -> Result<()> {
-    copy_range(src, dst, None, None)
+    copy_streams(src, dst, &CopyOptions::default())
 }
 
 /// Copies audio track `track` (0-based among the audio streams) alone into
@@ -108,7 +108,7 @@ pub fn extract_audio(src: &Path, track: usize, dst: &Path) -> Result<()> {
             .map(|(i, _)| i)
             .ok_or_else(|| Error::Invalid(format!("no audio track {track}")))?
     };
-    copy_range(src, dst, None, Some(idx))
+    copy_streams(src, dst, &CopyOptions { only: Some(idx), ..Default::default() })
 }
 
 /// Lossless cut: starts at the keyframe at or before `start` and ends after
@@ -117,11 +117,25 @@ pub fn trim(src: &Path, dst: &Path, start: f64, end: f64) -> Result<()> {
     if end <= start {
         return Err(Error::Invalid("the end must be after the start".into()));
     }
-    copy_range(src, dst, Some((start, end)), None)
+    copy_streams(src, dst, &CopyOptions { range: Some((start, end)), ..Default::default() })
 }
 
-/// `only`: write just this input stream (timing still follows the video).
-fn copy_range(src: &Path, dst: &Path, range: Option<(f64, f64)>, only: Option<usize>) -> Result<()> {
+/// What `copy_streams` copies (default: every stream, whole file).
+#[derive(Default)]
+pub(crate) struct CopyOptions<'a> {
+    /// Cut to this part (seconds); the start snaps back to a keyframe.
+    pub range: Option<(f64, f64)>,
+    /// Write just this input stream (timing still follows the video).
+    pub only: Option<usize>,
+    /// Leave out this input stream.
+    pub skip: Option<usize>,
+    /// A ready-made track, timed like the input, written as the first audio track.
+    pub first_audio: Option<(&'a av::StreamInfo, &'a [av::EncodedPacket])>,
+}
+
+/// Copies streams into a new container without re-encoding; times start at
+/// zero from the first video keyframe.
+pub(crate) fn copy_streams(src: &Path, dst: &Path, opts: &CopyOptions<'_>) -> Result<()> {
     let input = Input::open(src)?;
     let video = input.video_stream();
     let mut infos = Vec::new();
@@ -139,7 +153,7 @@ fn copy_range(src: &Path, dst: &Path, range: Option<(f64, f64)>, only: Option<us
     }
     let tmp = dst.with_extension("partial");
     let container = crate::mux::Container::from_path(dst);
-    let result = copy_packets(&input, video, &infos, only, &tmp, container, range);
+    let result = copy_packets(&input, video, &infos, opts, &tmp, container);
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -148,19 +162,56 @@ fn copy_range(src: &Path, dst: &Path, range: Option<(f64, f64)>, only: Option<us
     Ok(())
 }
 
+type ExtraTrack<'a> = (&'a av::StreamInfo, std::iter::Peekable<std::slice::Iter<'a, av::EncodedPacket>>);
+
+/// Writes the extra track's packets up to `until` seconds (input timeline),
+/// shifted like the copied streams and limited to the kept part.
+fn write_extra(mux: &mut crate::mux::Muxer, extra: &mut Option<ExtraTrack<'_>>, until: f64, origin: f64, end: Option<f64>) -> Result<()> {
+    let Some((info, packets)) = extra.as_mut() else { return Ok(()) };
+    let tb = info.time_base;
+    let offset = av::rescale((origin * 1_000_000.0) as i64, av::rational(1, 1_000_000), tb);
+    while let Some(p) = packets.peek() {
+        let secs = p.pts as f64 * f64::from(tb.num) / f64::from(tb.den);
+        if secs > until {
+            break;
+        }
+        if secs >= origin - 0.001 && end.is_none_or(|e| secs <= e) {
+            mux.write(p, offset)?;
+        }
+        packets.next();
+    }
+    Ok(())
+}
+
 fn copy_packets(
     input: &Input,
     video: Option<usize>,
     infos: &[av::StreamInfo],
-    only: Option<usize>,
+    opts: &CopyOptions<'_>,
     tmp: &Path,
     container: crate::mux::Container,
-    range: Option<(f64, f64)>,
 ) -> Result<()> {
-    let written: Vec<av::StreamInfo> = match only {
-        Some(i) => infos.get(i).cloned().into_iter().collect(),
-        None => infos.to_vec(),
-    };
+    let range = opts.range;
+    // Streams to write, in file order; the extra track goes before the first audio track.
+    let mut written: Vec<av::StreamInfo> = Vec::new();
+    let mut placed = false;
+    for (i, info) in infos.iter().enumerate() {
+        if opts.only.is_some_and(|o| o != i) || opts.skip == Some(i) {
+            continue;
+        }
+        if !placed
+            && matches!(info.id, av::StreamId::Audio(_))
+            && let Some((x, _)) = opts.first_audio
+        {
+            written.push(x.clone());
+            placed = true;
+        }
+        written.push(info.clone());
+    }
+    if !placed && let Some((x, _)) = opts.first_audio {
+        written.push(x.clone());
+    }
+    let mut extra: Option<ExtraTrack<'_>> = opts.first_audio.map(|(info, packets)| (info, packets.iter().peekable()));
     // The muxer skips packets of streams it was not given.
     let mut mux = crate::mux::Muxer::create(tmp, container, &written)?;
     // Last dts written per input stream; muxers like MP4 reject repeats.
@@ -215,6 +266,7 @@ fn copy_packets(
                 dts = prev + 1;
             }
         last_dts[idx] = Some(dts);
+        write_extra(&mut mux, &mut extra, secs, origin, range.map(|r| r.1))?;
         let enc = av::EncodedPacket {
             stream: infos[idx].id,
             data: pkt.data().into(),
@@ -226,6 +278,7 @@ fn copy_packets(
         };
         mux.write(&enc, offset)?;
     }
+    write_extra(&mut mux, &mut extra, f64::INFINITY, origin_secs.unwrap_or(0.0), range.map(|r| r.1))?;
     mux.finish()?;
     Ok(())
 }

@@ -318,6 +318,8 @@ export interface ClipInfo {
   markers: number[];
   /** The viewer's saved audio mix (see LaneMixer), if any. */
   mix: unknown;
+  /** The viewer mix rendered into the file's mixed track (null: as recorded). */
+  mixBaked: unknown;
 }
 
 // -------------------------------------------------------------------- events
@@ -359,6 +361,12 @@ export interface Stats {
   freeDiskBytes: number;
   cpuPercent: number;
   memoryBytes: number;
+}
+
+/** Lanes to mix (file audio track indexes; null = every lane) and dB per track. */
+export interface MixSpec {
+  tracks: number[] | null;
+  gainsDb: number[];
 }
 
 export interface ClipSaved {
@@ -424,14 +432,18 @@ export const api = {
   openOutputFolder: () => invoke<void>("open_output_folder"),
   remuxClip: (path: string) => invoke<string>("remux_clip", { path }),
   /** Lossless cut snapped to keyframes; returns the new file's path. */
-  trimClip: (path: string, startSecs: number, endSecs: number) =>
-    invoke<string>("trim_clip", { path, startSecs, endSecs }),
+  /**
+   * Saves an edited copy next to the clip: `range` cut losslessly and, with
+   * `mix`, a new first track of the lanes at these volumes (what Discord plays).
+   */
+  saveClipCopy: (path: string, range: [number, number] | null, mix: MixSpec | null, viewerMix: unknown) =>
+    invoke<string>("save_clip_copy", { path, range, mix, viewerMix }),
 
   /** Audio track names (lanes) of a clip. */
   clipTracks: (path: string) => invoke<string[]>("clip_tracks", { path }),
   /** Share copy with one mixed audio track (tracks: indices, null = all); maxMb 0 = no limit. */
-  shareClip: (path: string, tracks: number[] | null, gainsDb: number[] | null, maxMb: number) =>
-    invoke<ShareResult>("share_clip", { path, tracks, gainsDb, maxMb }),
+  shareClip: (path: string, tracks: number[] | null, gainsDb: number[] | null, maxMb: number, range: [number, number] | null) =>
+    invoke<ShareResult>("share_clip", { path, tracks, gainsDb, maxMb, range }),
   /** Each audio track as its own cached file, for the viewer's lane mixer. */
   clipAudioPreview: (path: string) => invoke<string[]>("clip_audio_preview", { path }),
   setClipMix: (path: string, mix: unknown) => invoke<void>("set_clip_mix", { path, mix }),

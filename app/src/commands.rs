@@ -346,16 +346,35 @@ pub async fn remux_clip(app: AppHandle, path: String) -> CmdResult<String> {
     .await
 }
 
+/// Saves an edited copy next to the clip: the `range` (lossless cut) and,
+/// with `mix`, a newly rendered "Mix (all lanes)" first track, which is what
+/// Discord and players play. `viewer_mix` is the viewer's lane state for it.
 #[tauri::command]
-pub async fn trim_clip(app: AppHandle, path: String, start_secs: f64, end_secs: f64) -> CmdResult<String> {
+pub async fn save_clip_copy(
+    app: AppHandle,
+    path: String,
+    range: Option<(f64, f64)>,
+    mix: Option<lanes_core::share::MixSpec>,
+    viewer_mix: Option<serde_json::Value>,
+) -> CmdResult<String> {
     blocking(move || {
         let state = app.state::<AppState>();
         let p = checked_path(&state, &path)?;
         let dir = p.parent().unwrap_or(Path::new("."));
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_string();
-        let out = naming::unique_path(dir, &format!("{}_trim", p.file_stem().unwrap_or_default().to_string_lossy()), &ext);
-        lanes_core::media::trim(&p, &out, start_secs, end_secs).map_err(err)?;
-        state.library.add_copy(&p, &out, library::Kind::Clip, Some((start_secs, end_secs)));
+        let suffix = match (range.is_some(), mix.is_some()) {
+            (true, true) => "edit",
+            (true, false) => "trim",
+            (false, _) => "mix",
+        };
+        let out = naming::unique_path(dir, &format!("{}_{suffix}", p.file_stem().unwrap_or_default().to_string_lossy()), &ext);
+        lanes_core::share::edited_copy(&p, &out, range, mix.as_ref()).map_err(err)?;
+        let kind = if range.is_some() { library::Kind::Clip } else { kind_of(&state, &p) };
+        state.library.add_copy(&p, &out, kind, range);
+        if mix.is_some() {
+            state.library.set_baked_mix(&out, viewer_mix);
+        }
+        log::info!("edited copy: {} (cut: {}, new mix: {})", out.display(), range.is_some(), mix.is_some());
         Ok(out.to_string_lossy().into_owned())
     })
     .await
@@ -380,6 +399,7 @@ pub async fn share_clip(
     tracks: Option<Vec<usize>>,
     gains_db: Option<Vec<f32>>,
     max_mb: u32,
+    range: Option<(f64, f64)>,
 ) -> CmdResult<lanes_core::share::ShareResult> {
     blocking(move || {
         let state = app.state::<AppState>();
@@ -392,8 +412,8 @@ pub async fn share_clip(
             .and_then(|gpu| lanes_core::encode::resolve(lanes_core::encode::available(gpu), state.settings().encoder.backend, lanes_core::config::VideoCodec::H264))
             .map_or(lanes_core::config::EncoderBackend::X264, |(b, _)| b);
         let opts = lanes_core::share::ShareOptions {
-            audio_tracks: tracks,
-            gains_db: gains_db.unwrap_or_default(),
+            mix: lanes_core::share::MixSpec { tracks, gains_db: gains_db.unwrap_or_default() },
+            range,
             max_bytes: (max_mb > 0).then(|| u64::from(max_mb) * 1024 * 1024),
             backend,
         };

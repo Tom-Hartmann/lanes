@@ -165,7 +165,7 @@ pub fn run() {
             commands::reveal_clip,
             commands::open_output_folder,
             commands::remux_clip,
-            commands::trim_clip,
+            commands::save_clip_copy,
             commands::clip_tracks,
             commands::clip_audio_preview,
             commands::set_clip_mix,

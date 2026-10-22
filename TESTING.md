@@ -103,12 +103,13 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 - [ ] Delete goes to the recycle bin
 - [ ] Multi-select: checkbox on hover, click/Ctrl-click/Shift-click, "Select all", Ctrl+A, Esc, "Delete N" to the recycle bin
 - [ ] Audio mix in the viewer: every lane audible, per-lane volume / mute / solo, stays in sync when seeking and in slow motion
-- [ ] Share copy uses the audio mix (lane gains and mutes)
+- [ ] Share copy uses the audio mix (lane gains and mutes) and the trim selection
 - [ ] Mixed track: new files start with "Mix (all lanes)" (verified by the live test); Discord plays game + mic + music from the raw file; the viewer mixer lists only the lanes (no doubled audio); off in Settings → Encoder
 - [ ] Drag a clip card or the viewer's "Drag to share" into Discord / Explorer; a click still opens the clip
 - [ ] Viewer playback is smooth with the lane mix; seek bar under the video (click/drag, hover time, bookmarks shown); control bar: time advances (tenths), play/pause, volume/mute (remembered), fullscreen keeps the bar
 - [ ] Adding a lane while buffering: lane shows "Not in the running capture yet", top bar "Restart capture now" applies it (refused while recording)
-- [ ] Audio mix is remembered when the clip is opened again; "Save mixed copy" writes a full-quality copy
+- [ ] Audio mix is remembered when the clip is opened again
+- [ ] "Save copy" with a changed mix (and/or trim): Discord plays the adjusted volumes; the viewer switches to the copy; "Drag original" warning while edits are unsaved (rendered mix level verified by an automated test)
 - [ ] Bookmarks: hotkey / Dashboard button gives sound + notice; markers on the timeline of clips and recordings (pauses skipped), B / N jump, scissors trims around one; a trimmed copy keeps its markers
 - [ ] Game chips with counts, "Other" for unknown, sort options; old clips get their game from the file name
 - [ ] Update notice in the sidebar when GitHub has a newer release; opens the release page (not elevated); off in Settings → General

@@ -28,7 +28,7 @@ export function dragFile(path: string) {
  * Drag handle: a native drag starts once the pointer moves a few pixels with
  * the button held, so a plain click does nothing.
  */
-export function DragHandle({ path, label = "Drag me out", title }: { path: string; label?: string; title?: string }) {
+export function DragHandle({ path, label = "Drag me out", title, warn = false }: { path: string; label?: string; title?: string; warn?: boolean }) {
   const start = useRef<{ x: number; y: number } | null>(null);
   const dragging = useRef(false);
   return (
@@ -49,7 +49,11 @@ export function DragHandle({ path, label = "Drag me out", title }: { path: strin
         if (!s || dragging.current) return;
         if (Math.abs(e.clientX - s.x) + Math.abs(e.clientY - s.y) > 4) begin();
       }}
-      className="flex cursor-grab items-center gap-2 rounded-md border border-dashed border-sky-700/70 bg-sky-500/10 px-3 py-1.5 text-sm text-sky-200 select-none hover:bg-sky-500/20 active:cursor-grabbing"
+      className={`flex cursor-grab items-center gap-2 rounded-md border border-dashed px-3 py-1.5 text-sm select-none active:cursor-grabbing ${
+        warn
+          ? "border-amber-600/70 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20"
+          : "border-sky-700/70 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20"
+      }`}
     >
       <span aria-hidden>⠿</span> {label}
     </div>
@@ -88,15 +92,15 @@ interface Props {
   mix: MixChoice;
   mixed: boolean;
   hasAudio: boolean;
-  /** A new file was written into the library folder. */
-  onSaved: () => void;
+  /** The trim selection, when it is not the whole clip. */
+  range: [number, number] | null;
 }
 
-export function SharePanel({ clip, mix, mixed, hasAudio, onSaved }: Props) {
+export function SharePanel({ clip, mix, mixed, hasAudio, range }: Props) {
   const settings = useSettingsStore((s) => s.settings);
   const game = useStatusStore((s) => s.status?.game?.name);
   const [maxMb, setMaxMb] = useState(String(settings?.share.maxMb ?? 10));
-  const [busy, setBusy] = useState<"export" | "send" | "mixed" | null>(null);
+  const [busy, setBusy] = useState<"export" | "send" | null>(null);
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<ShareResult | null>(null);
 
@@ -109,25 +113,10 @@ export function SharePanel({ clip, mix, mixed, hasAudio, onSaved }: Props) {
     setBusy("export");
     try {
       if (mix.tracks?.length === 0 && hasAudio) throw new Error("every lane is muted in the audio mix");
-      const r = await api.shareClip(clip.path, mix.tracks, mixed ? mix.gainsDb : null, Number(maxMb));
+      const r = await api.shareClip(clip.path, mix.tracks, mixed ? mix.gainsDb : null, Number(maxMb), range);
       setResult(r);
     } catch (err) {
       notify({ kind: "error", title: "Share copy failed", body: errorMessage(err) });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  // Full quality, one mixed track, next to the share copies.
-  const saveMixed = async () => {
-    setBusy("mixed");
-    try {
-      if (mix.tracks?.length === 0 && hasAudio) throw new Error("every lane is muted in the audio mix");
-      const r = await api.shareClip(clip.path, mix.tracks, mix.gainsDb, 0);
-      notify({ kind: "success", title: "Mixed copy saved", body: r.path, action: { label: "Show in folder", run: () => void api.revealClip(r.path) } });
-      onSaved();
-    } catch (err) {
-      notify({ kind: "error", title: "Mixed copy failed", body: errorMessage(err) });
     } finally {
       setBusy(null);
     }
@@ -157,14 +146,9 @@ export function SharePanel({ clip, mix, mixed, hasAudio, onSaved }: Props) {
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-sm font-medium text-zinc-300">Share</span>
         <span className="text-xs text-zinc-500">
-          {!hasAudio ? "No audio" : mixed ? "Uses your audio mix above" : "All lanes mixed into one track"}
+          {[range && "the selection", hasAudio && (mixed ? "your audio mix" : "all lanes in one track")].filter(Boolean).join(", ") || "No audio"}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          {hasAudio && mixed && (
-            <Button size="sm" variant="ghost" onClick={() => void saveMixed()} disabled={busy !== null} title="Full quality copy with the audio mix in one track">
-              {busy === "mixed" && <Spinner />} Save mixed copy
-            </Button>
-          )}
           <Select value={maxMb} onChange={setMaxMb} options={SIZE_OPTIONS} />
           <Button size="sm" onClick={() => void exportCopy()} disabled={busy !== null}>
             {busy === "export" && <Spinner />} Create share copy
@@ -172,9 +156,8 @@ export function SharePanel({ clip, mix, mixed, hasAudio, onSaved }: Props) {
         </div>
       </div>
       <p className="text-xs text-zinc-500">
-        Discord and most players only play the first audio track, so the share copy mixes the lanes into one (as set in
-        the audio mix: mute or turn down a lane to change it).
-        It is only re-encoded (on the GPU) when it has to fit the size limit.
+        A small copy for Discord & co: the trim selection, with the lanes mixed into one track as set in the audio mix.
+        It is only re-encoded (on the GPU) when it has to fit the size limit. For full quality, use "Save copy" below.
       </p>
       {result && (
         <div className="flex flex-wrap items-center gap-2 rounded-md bg-zinc-900/80 px-3 py-2">

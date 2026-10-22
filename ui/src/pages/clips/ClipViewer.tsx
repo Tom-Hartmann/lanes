@@ -16,8 +16,10 @@ import { TrimBar } from "./TrimBar";
 interface Props {
   clip: ClipInfo;
   onClose: () => void;
-  /** The library changed (new trimmed/remuxed file, deleted clip). */
+  /** The library changed (new remuxed file, deleted clip). */
   onChanged: () => void;
+  /** Show another file of the library (e.g. a copy just saved). */
+  onOpenPath: (path: string) => void;
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
@@ -61,14 +63,14 @@ function saveSpeed(v: number) {
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
 
-export function ClipViewer({ clip, onClose, onChanged }: Props) {
+export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const [src, setSrc] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [duration, setDuration] = useState(clip.durationSecs ?? 0);
   const [range, setRange] = useState<[number, number]>([0, clip.durationSecs ?? 0]);
   const [playhead, setPlayhead] = useState(0);
-  const [busy, setBusy] = useState<"trim" | "remux" | null>(null);
+  const [busy, setBusy] = useState<"save" | "remux" | null>(null);
   const previewEnd = useRef<number | null>(null);
   const viewerSettings = useSettingsStore((s) => s.settings?.viewer);
   const keyMap = useMemo(() => resolveViewerKeys(viewerSettings), [viewerSettings]);
@@ -299,13 +301,21 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
-  const trim = async () => {
-    setBusy("trim");
-    const out = await attempt("Could not trim the clip", () => api.trimClip(clip.path, start, end));
+  const trimmed = start > 0.05 || end < duration - 0.05;
+  const bake = mixer.bake;
+  const edits = trimmed || bake !== null;
+
+  // A copy with what you see and hear: the selection (lossless) and the audio
+  // mix rendered into its first track. The viewer then switches to the copy.
+  const saveCopy = async () => {
+    setBusy("save");
+    const out = await attempt("Could not save the copy", () =>
+      api.saveClipCopy(clip.path, trimmed ? [start, end] : null, bake, bake ? mixer.payload : null),
+    );
     setBusy(null);
     if (out) {
-      notify({ kind: "success", title: "Trimmed copy saved", body: out, action: { label: "Show in folder", run: () => void api.revealClip(out) } });
-      onChanged();
+      notify({ kind: "success", title: "Copy saved, now showing it", body: out, action: { label: "Show in folder", run: () => void api.revealClip(out) } });
+      onOpenPath(out);
     }
   };
 
@@ -330,7 +340,9 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
   };
 
   const isMp4 = /\.mp4$/i.test(clip.path);
-  const trimmed = start > 0.05 || end < duration - 0.05;
+  const saveWhat = [trimmed && "the selection", mixer.bakeReason === "mix" && "your audio mix", mixer.bakeReason === "track" && "a mixed track for Discord"]
+    .filter(Boolean)
+    .join(" + ");
 
   return (
     <div
@@ -351,10 +363,11 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
           </span>
           <DragHandle
             path={clip.path}
-            label="Drag to share"
+            warn={edits}
+            label={edits ? "Drag original" : "Drag to share"}
             title={
-              (mixer.titles?.length ?? 0) > 1 && !mixer.hasMix
-                ? `This older file has no mixed track: Discord only plays "${mixer.firstTrack ?? "the first lane"}". Use "Create share copy" below for all lanes.`
+              edits
+                ? `Your ${saveWhat} ${trimmed && mixer.bakeReason ? "are" : "is"} not in this file yet. Click "Save copy" (bottom left), then drag the copy.`
                 : "Drag this file into Discord, a chat or a folder"
             }
           />
@@ -571,12 +584,25 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
           </div>
         </div>
 
-        <SharePanel clip={clip} mix={mixer.choice} mixed={mixer.changed} hasAudio={(mixer.titles?.length ?? 0) > 0} onSaved={onChanged} />
+        <SharePanel
+          clip={clip}
+          mix={mixer.choice}
+          mixed={mixer.changed}
+          hasAudio={(mixer.titles?.length ?? 0) > 0}
+          range={trimmed ? [start, end] : null}
+        />
 
         <footer className="flex flex-wrap items-center gap-2 border-t border-zinc-800 px-4 py-2.5">
-          <Button size="sm" variant="primary" disabled={!trimmed || busy !== null || duration <= 0} onClick={() => void trim()}>
-            {busy === "trim" ? <Spinner /> : <IconScissors size={14} />} Save trimmed copy
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={!edits || busy !== null || duration <= 0}
+            onClick={() => void saveCopy()}
+            title={edits ? `Save a copy with ${saveWhat} (video is not re-encoded)` : "Trim the clip or change the audio mix first"}
+          >
+            {busy === "save" ? <Spinner /> : <IconScissors size={14} />} Save copy
           </Button>
+          {edits && <span className="text-xs text-zinc-500">with {saveWhat}</span>}
           {!isMp4 && (
             <Button size="sm" disabled={busy !== null} onClick={() => void remux()} title="Copy the streams into an MP4 container (no re-encode)">
               {busy === "remux" && <Spinner />} Remux to MP4

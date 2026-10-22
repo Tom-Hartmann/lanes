@@ -1,7 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Button, DbSlider, Spinner, ToggleChip } from "../../components/ui";
-import { api, errorMessage, type ClipInfo } from "../../lib/ipc";
+import { api, errorMessage, type ClipInfo, type MixSpec } from "../../lib/ipc";
 
 // The <video> only plays a file's first audio track, so the viewer plays
 // every lane as its own (cached, extracted) audio file through a WebAudio gain
@@ -15,11 +15,8 @@ export interface LaneMix {
   solo: boolean;
 }
 
-/** What the share copy uses: included tracks and their gains. */
-export interface MixChoice {
-  tracks: number[] | null;
-  gainsDb: number[];
-}
+/** What copies use: included tracks and their gains (file track indexes). */
+export type MixChoice = MixSpec;
 
 /** Title of the all-lanes track Lanes writes first (core `MIX_TRACK_TITLE`). */
 export const MIX_TRACK_TITLE = "Mix (all lanes)";
@@ -44,6 +41,16 @@ function initialMix(clip: ClipInfo, count: number): LaneMix[] {
       solo: x?.solo === true,
     };
   });
+}
+
+/** Compares mixes; "every lane at 0 dB" and null are the same (the recorded mix). */
+function mixKey(m: unknown): string {
+  if (!Array.isArray(m)) return "default";
+  const lanes = m.map((x) => {
+    const l = x as Partial<LaneMix> | null;
+    return { gainDb: typeof l?.gainDb === "number" ? l.gainDb : 0, muted: l?.muted === true, solo: l?.solo === true };
+  });
+  return lanes.some((l) => l.gainDb !== 0 || l.muted || l.solo) ? JSON.stringify(lanes) : "default";
 }
 
 /** What is stored: the lanes, or null for the default (all at 0 dB). */
@@ -206,11 +213,25 @@ export function useLaneMixer(video: RefObject<HTMLVideoElement | null>, src: str
     };
   }, [lanes, skip]);
 
+  const payload = useMemo(() => mixPayload(lanes), [lanes]);
+  // What a saved copy must render into its mixed track: what you hear when it
+  // differs from the file's mixed track, or the lanes of a file without one
+  // (players and Discord would only play its first lane).
+  const bakeReason: "mix" | "track" | null =
+    titles === null || titles.length === 0
+      ? null
+      : mixKey(payload) !== mixKey(clip.mixBaked)
+        ? "mix"
+        : titles.length > 1 && skip === 0
+          ? "track"
+          : null;
+  const bake: MixSpec | null = bakeReason ? choice : null;
+
   const setLane = (i: number, p: Partial<LaneMix>) => setLanes((l) => l.map((x, j) => (j === i ? { ...x, ...p } : x)));
   const reset = () => setLanes((l) => l.map(() => ({ gainDb: 0, muted: false, solo: false })));
   const changed = lanes.some((l) => l.gainDb !== 0 || l.muted || l.solo);
 
-  return { titles, lanes, setLane, reset, changed, ready, error, choice, hasMix: skip > 0, firstTrack };
+  return { titles, lanes, setLane, reset, changed, ready, error, choice, payload, bake, bakeReason, hasMix: skip > 0, firstTrack };
 }
 
 export function LaneMixerPanel({ mixer }: { mixer: ReturnType<typeof useLaneMixer> }) {
@@ -224,7 +245,7 @@ export function LaneMixerPanel({ mixer }: { mixer: ReturnType<typeof useLaneMixe
         <span className="text-xs text-zinc-500">
           {error
             ? `Lane preview unavailable: ${error}`
-            : "Adjust each lane after the fact. Saved with the clip; share copies and \"Save mixed copy\" use it."}
+            : "Adjust each lane after the fact. \"Save copy\" and share copies use this mix."}
         </span>
         <Button size="sm" variant="ghost" className="ml-auto" disabled={!changed} onClick={reset}>
           Reset
