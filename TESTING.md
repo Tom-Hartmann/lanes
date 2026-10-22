@@ -104,7 +104,7 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 - [ ] Multi-select: checkbox on hover, click/Ctrl-click/Shift-click, "Select all", Ctrl+A, Esc, "Delete N" to the recycle bin
 - [ ] Audio mix in the viewer: every lane audible, per-lane volume / mute / solo, stays in sync when seeking and in slow motion
 - [ ] Share copy uses the audio mix (lane gains and mutes)
-- [ ] Viewer playback is smooth with the lane mix; own control bar: time advances (tenths), play/pause, volume/mute (remembered), fullscreen keeps the bar
+- [ ] Viewer playback is smooth with the lane mix; seek bar under the video (click/drag, hover time, bookmarks shown); control bar: time advances (tenths), play/pause, volume/mute (remembered), fullscreen keeps the bar
 - [ ] Adding a lane while buffering: lane shows "Not in the running capture yet", top bar "Restart capture now" applies it (refused while recording)
 - [ ] Audio mix is remembered when the clip is opened again; "Save mixed copy" writes a full-quality copy
 - [ ] Bookmarks: hotkey / Dashboard button gives sound + notice; markers on the timeline of clips and recordings (pauses skipped), B / N jump, scissors trims around one; a trimmed copy keeps its markers

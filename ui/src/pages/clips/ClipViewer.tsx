@@ -9,6 +9,7 @@ import { attempt, notify } from "../../store/noticeStore";
 import { useSettingsStore } from "../../store/settingsStore";
 import { LaneMixerPanel, resumeAudio, useLaneMixer } from "./LaneMixer";
 import { forgetThumbnail } from "./thumbnails";
+import { SeekBar } from "./SeekBar";
 import { SharePanel } from "./SharePanel";
 import { TrimBar } from "./TrimBar";
 
@@ -423,7 +424,10 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
               />
             )}
           </div>
-          <div className="flex items-center gap-3 border-b border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs text-zinc-300">
+          <div className="bg-zinc-950 px-3 pt-1">
+            <SeekBar duration={duration} time={playhead} markers={markers} onSeek={seek} />
+          </div>
+          <div className="flex items-center gap-3 border-b border-zinc-800 bg-zinc-950 px-3 pb-1.5 text-xs text-zinc-300">
             <button type="button" onClick={togglePlay} disabled={!src} className="rounded p-1 hover:bg-zinc-800" title={playing ? "Pause" : "Play"}>
               {playing ? <span className="block h-3.5 w-3.5 border-x-4 border-current" /> : <IconPlay size={14} />}
             </button>
