@@ -21,6 +21,9 @@ export interface MixChoice {
   gainsDb: number[];
 }
 
+/** Title of the all-lanes track Lanes writes first (core `MIX_TRACK_TITLE`). */
+export const MIX_TRACK_TITLE = "Mix (all lanes)";
+
 const MIN_DB = -60;
 const dbToGain = (db: number) => (db <= MIN_DB ? 0 : 10 ** (db / 20));
 const audible = (lanes: LaneMix[], i: number) =>
@@ -63,7 +66,11 @@ function sourceFor(el: HTMLMediaElement) {
 
 export function useLaneMixer(video: RefObject<HTMLVideoElement | null>, src: string | null, clip: ClipInfo, master: number) {
   const path = clip.path;
+  /** Lane titles (the mixed track, if any, is not a lane). */
   const [titles, setTitles] = useState<string[] | null>(null);
+  /** 1 when track 0 is the mixed track: lane i is track i + skip. */
+  const [skip, setSkip] = useState(0);
+  const [firstTrack, setFirstTrack] = useState<string | null>(null);
   const [lanes, setLanes] = useState<LaneMix[]>([]);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -80,9 +87,12 @@ export function useLaneMixer(video: RefObject<HTMLVideoElement | null>, src: str
     api.clipTracks(path).then(
       (t) => {
         if (!alive) return;
-        const initial = initialMix(clip, t.length);
+        const sk = t.length > 1 && t[0] === MIX_TRACK_TITLE ? 1 : 0;
+        const initial = initialMix(clip, t.length - sk);
         lastSaved.current = JSON.stringify(mixPayload(initial));
-        setTitles(t);
+        setSkip(sk);
+        setFirstTrack(t[0] ?? null);
+        setTitles(t.slice(sk));
         setLanes(initial);
         loaded.current = true;
       },
@@ -120,7 +130,7 @@ export function useLaneMixer(video: RefObject<HTMLVideoElement | null>, src: str
       (files) => {
         if (!alive) return;
         const ac = audioContext();
-        gains.current = files.map((f) => {
+        gains.current = files.slice(skip).map((f) => {
           const a = new Audio();
           a.crossOrigin = "anonymous";
           a.preload = "auto";
@@ -178,7 +188,7 @@ export function useLaneMixer(video: RefObject<HTMLVideoElement | null>, src: str
       gains.current = [];
       setReady(false);
     };
-  }, [video, src, path, trackCount]);
+  }, [video, src, path, trackCount, skip]);
 
   // Apply the lane gains (and the master).
   useEffect(() => {
@@ -189,17 +199,18 @@ export function useLaneMixer(video: RefObject<HTMLVideoElement | null>, src: str
 
   const choice: MixChoice = useMemo(() => {
     const on = lanes.map((_, i) => audible(lanes, i));
+    // Indexes are file tracks: shift past the mixed track.
     return {
-      tracks: on.every(Boolean) ? null : on.flatMap((x, i) => (x ? [i] : [])),
-      gainsDb: lanes.map((l) => l.gainDb),
+      tracks: on.every(Boolean) ? null : on.flatMap((x, i) => (x ? [i + skip] : [])),
+      gainsDb: [...Array<number>(skip).fill(0), ...lanes.map((l) => l.gainDb)],
     };
-  }, [lanes]);
+  }, [lanes, skip]);
 
   const setLane = (i: number, p: Partial<LaneMix>) => setLanes((l) => l.map((x, j) => (j === i ? { ...x, ...p } : x)));
   const reset = () => setLanes((l) => l.map(() => ({ gainDb: 0, muted: false, solo: false })));
   const changed = lanes.some((l) => l.gainDb !== 0 || l.muted || l.solo);
 
-  return { titles, lanes, setLane, reset, changed, ready, error, choice };
+  return { titles, lanes, setLane, reset, changed, ready, error, choice, hasMix: skip > 0, firstTrack };
 }
 
 export function LaneMixerPanel({ mixer }: { mixer: ReturnType<typeof useLaneMixer> }) {

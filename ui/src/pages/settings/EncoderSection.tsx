@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Callout, Card, Field, NumberInput, Segmented, Select, Slider } from "../../components/ui";
+import { Callout, Card, Field, NumberInput, Segmented, Select, Slider, Toggle } from "../../components/ui";
 import {
   api,
   type AudioCodec,
@@ -128,6 +128,12 @@ export function EncoderSection({ enc }: { enc: EncoderSettings }) {
             ...(AUDIO_BITRATES.includes(enc.audioBitrateKbps) ? [] : [{ value: String(enc.audioBitrateKbps), label: `${enc.audioBitrateKbps} kbps` }]),
           ]}
         />
+      </Field>
+      <Field
+        label="Mixed track first"
+        hint="With 2+ lanes, files start with one track of all lanes mixed, so Discord, browsers and phones play everything. The separate lanes follow it."
+      >
+        <Toggle checked={enc.mixTrack} onChange={(mixTrack) => set({ mixTrack })} />
       </Field>
       {enc.audioCodec === "opus" && <Callout>Opus in MP4 is not supported by every editor; AAC is the safest choice.</Callout>}
     </Card>

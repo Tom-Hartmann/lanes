@@ -14,7 +14,7 @@ use crate::audio::mixer::{MeterFrame, Mixer};
 use crate::audio::wasapi::{CaptureSpec, CaptureStatus, Chunk, SourceCapture};
 use crate::av::{EncodedPacket, SharedPacket, StreamId, StreamInfo};
 use crate::capture::windows_list;
-use crate::config::{AudioLayout, AudioSource, EncoderSettings, SourceKind};
+use crate::config::{AudioLayout, AudioSource, EncoderSettings, MIX_STREAM, MIX_TRACK_TITLE, SourceKind};
 use crate::encode::audio::AudioEncoder;
 use crate::error::Result;
 use crate::util::{PacingTimer, Priority, spawn};
@@ -63,6 +63,19 @@ impl AudioSession {
         // One encoder per lane, opened up front for the stream parameters.
         let mut encoders = Vec::new();
         let mut streams = Vec::new();
+        // The mixed track goes first: files are written in this order.
+        let mix = if settings.mix_track && layout.lanes.len() > 1 {
+            let enc = AudioEncoder::open(settings.audio_codec, settings.audio_bitrate_kbps)?;
+            streams.push(StreamInfo {
+                id: StreamId::Audio(MIX_STREAM),
+                params: Arc::new(enc.context().parameters()?),
+                time_base: enc.context().time_base(),
+                title: MIX_TRACK_TITLE.into(),
+            });
+            Some(enc)
+        } else {
+            None
+        };
         for (i, lane) in layout.lanes.iter().enumerate() {
             let enc = AudioEncoder::open(settings.audio_codec, settings.audio_bitrate_kbps)?;
             streams.push(StreamInfo {
@@ -83,7 +96,7 @@ impl AudioSession {
             mixer_loop(t0, mixer_layout, chunk_rx, mixer_cmd_rx, blocks_tx, on_meters);
         })?;
         let encoder = spawn("lanes-audio-encode", Priority::AboveNormal, move || {
-            encode_loop(t0, encoders, blocks_rx, packets);
+            encode_loop(t0, encoders, mix, blocks_rx, packets);
         })?;
 
         let mut session = Self {
@@ -243,12 +256,19 @@ fn mixer_loop(
     }
 }
 
-fn encode_loop(t0: Timestamp, mut encoders: Vec<AudioEncoder>, blocks: Receiver<Vec<Vec<f32>>>, packets: Sender<SharedPacket>) {
+fn encode_loop(
+    t0: Timestamp,
+    mut encoders: Vec<AudioEncoder>,
+    mut mix: Option<AudioEncoder>,
+    blocks: Receiver<Vec<Vec<f32>>>,
+    packets: Sender<SharedPacket>,
+) {
     let mut out = Vec::new();
-    let send = |lane: usize, enc: &AudioEncoder, out: &mut Vec<crate::av::Packet>| {
+    let mut sum: Vec<f32> = Vec::new();
+    let send = |id: u8, enc: &AudioEncoder, out: &mut Vec<crate::av::Packet>| {
         let tb = enc.context().time_base();
         for p in out.drain(..) {
-            let pkt = Arc::new(EncodedPacket::from_av(StreamId::Audio(lane as u8), &p, tb, t0));
+            let pkt = Arc::new(EncodedPacket::from_av(StreamId::Audio(id), &p, tb, t0));
             let _ = packets.send_timeout(pkt, Duration::from_millis(50));
         }
     };
@@ -257,11 +277,30 @@ fn encode_loop(t0: Timestamp, mut encoders: Vec<AudioEncoder>, blocks: Receiver<
             if let Err(e) = enc.push(samples, &mut out) {
                 log::error!("audio encode (lane {lane}): {e}");
             }
-            send(lane, enc, &mut out);
+            send(lane as u8, enc, &mut out);
+        }
+        if let Some(enc) = mix.as_mut() {
+            // Lane blocks already carry lane volume/mute.
+            sum.clear();
+            sum.resize(block.iter().map(Vec::len).max().unwrap_or(0), 0.0);
+            for lane in &block {
+                for (s, x) in sum.iter_mut().zip(lane) {
+                    *s += x;
+                }
+            }
+            crate::audio::dsp::soft_clip(&mut sum);
+            if let Err(e) = enc.push(&sum, &mut out) {
+                log::error!("audio encode (mix): {e}");
+            }
+            send(MIX_STREAM, enc, &mut out);
         }
     }
     for (lane, enc) in encoders.iter_mut().enumerate() {
         let _ = enc.flush(&mut out);
-        send(lane, enc, &mut out);
+        send(lane as u8, enc, &mut out);
+    }
+    if let Some(enc) = mix.as_mut() {
+        let _ = enc.flush(&mut out);
+        send(MIX_STREAM, enc, &mut out);
     }
 }

@@ -75,7 +75,16 @@ pub struct EncoderSettings {
     pub preset: EncoderPreset,
     pub audio_codec: AudioCodec,
     pub audio_bitrate_kbps: u32,
+    /// With two or more lanes, also write all lanes mixed into one track,
+    /// first in the file: Discord, browsers and phones only play the first
+    /// audio track. The separate lanes follow it.
+    pub mix_track: bool,
 }
+
+/// Title of the mixed track (see `EncoderSettings::mix_track`).
+pub const MIX_TRACK_TITLE: &str = "Mix (all lanes)";
+/// Stream id of the mixed track (lanes use their index).
+pub const MIX_STREAM: u8 = u8::MAX;
 
 impl Default for EncoderSettings {
     fn default() -> Self {
@@ -90,6 +99,7 @@ impl Default for EncoderSettings {
             preset: EncoderPreset::Balanced,
             audio_codec: AudioCodec::Aac,
             audio_bitrate_kbps: 160,
+            mix_track: true,
         }
     }
 }

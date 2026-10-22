@@ -104,6 +104,8 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 - [ ] Multi-select: checkbox on hover, click/Ctrl-click/Shift-click, "Select all", Ctrl+A, Esc, "Delete N" to the recycle bin
 - [ ] Audio mix in the viewer: every lane audible, per-lane volume / mute / solo, stays in sync when seeking and in slow motion
 - [ ] Share copy uses the audio mix (lane gains and mutes)
+- [ ] Mixed track: new files start with "Mix (all lanes)" (verified by the live test); Discord plays game + mic + music from the raw file; the viewer mixer lists only the lanes (no doubled audio); off in Settings → Encoder
+- [ ] Drag a clip card or the viewer's "Drag to share" into Discord / Explorer; a click still opens the clip
 - [ ] Viewer playback is smooth with the lane mix; seek bar under the video (click/drag, hover time, bookmarks shown); control bar: time advances (tenths), play/pause, volume/mute (remembered), fullscreen keeps the bar
 - [ ] Adding a lane while buffering: lane shows "Not in the running capture yet", top bar "Restart capture now" applies it (refused while recording)
 - [ ] Audio mix is remembered when the clip is opened again; "Save mixed copy" writes a full-quality copy

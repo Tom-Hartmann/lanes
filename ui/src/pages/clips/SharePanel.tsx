@@ -19,18 +19,23 @@ const SIZE_OPTIONS = [
 export const isDiscordWebhook = (url: string) =>
   /^https:\/\/(ptb\.|canary\.)?(discord|discordapp)\.com\/api\/webhooks\/\d+\/[\w-]+/.test(url.trim());
 
+/** Starts a native (OLE) file drag, e.g. into Discord; errors become a toast. */
+export function dragFile(path: string) {
+  return api.dragClip(path).catch((err: unknown) => notify({ kind: "error", title: "Drag failed", body: errorMessage(err) }));
+}
+
 /**
  * Drag handle: a native drag starts once the pointer moves a few pixels with
  * the button held, so a plain click does nothing.
  */
-function DragHandle({ path }: { path: string }) {
+export function DragHandle({ path, label = "Drag me out", title }: { path: string; label?: string; title?: string }) {
   const start = useRef<{ x: number; y: number } | null>(null);
   const dragging = useRef(false);
   return (
     <div
       role="button"
       tabIndex={0}
-      title="Drag into Discord, Explorer, a browser upload…"
+      title={title ?? "Drag into Discord, Explorer, a browser upload…"}
       onPointerDown={(e) => {
         if (e.button === 0) start.current = { x: e.clientX, y: e.clientY };
       }}
@@ -46,17 +51,14 @@ function DragHandle({ path }: { path: string }) {
       }}
       className="flex cursor-grab items-center gap-2 rounded-md border border-dashed border-sky-700/70 bg-sky-500/10 px-3 py-1.5 text-sm text-sky-200 select-none hover:bg-sky-500/20 active:cursor-grabbing"
     >
-      <span aria-hidden>⠿</span> Drag me out
+      <span aria-hidden>⠿</span> {label}
     </div>
   );
 
   function begin() {
     dragging.current = true;
     start.current = null;
-    api
-      .dragClip(path)
-      .catch((err: unknown) => notify({ kind: "error", title: "Drag failed", body: errorMessage(err) }))
-      .finally(() => (dragging.current = false));
+    void dragFile(path).finally(() => (dragging.current = false));
   }
 }
 

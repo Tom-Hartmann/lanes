@@ -10,7 +10,7 @@ import { useSettingsStore } from "../../store/settingsStore";
 import { LaneMixerPanel, resumeAudio, useLaneMixer } from "./LaneMixer";
 import { forgetThumbnail } from "./thumbnails";
 import { SeekBar } from "./SeekBar";
-import { SharePanel } from "./SharePanel";
+import { DragHandle, SharePanel } from "./SharePanel";
 import { TrimBar } from "./TrimBar";
 
 interface Props {
@@ -349,6 +349,15 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
           <span className="hidden shrink-0 text-xs text-zinc-500 sm:inline">
             {formatDate(clip.createdMs)} · {formatBytes(clip.sizeBytes)}
           </span>
+          <DragHandle
+            path={clip.path}
+            label="Drag to share"
+            title={
+              (mixer.titles?.length ?? 0) > 1 && !mixer.hasMix
+                ? `This older file has no mixed track: Discord only plays "${mixer.firstTrack ?? "the first lane"}". Use "Create share copy" below for all lanes.`
+                : "Drag this file into Discord, a chat or a folder"
+            }
+          />
           <button onClick={onClose} className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200" aria-label="Close">
             <IconX size={16} />
           </button>

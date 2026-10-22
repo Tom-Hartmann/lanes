@@ -3,6 +3,7 @@ import { IconPlay } from "../../components/icons";
 import { Badge, cx } from "../../components/ui";
 import { formatBytes, formatDate, formatDuration } from "../../lib/format";
 import type { ClipInfo } from "../../lib/ipc";
+import { dragFile } from "./SharePanel";
 import { clipThumbnail } from "./thumbnails";
 
 /** Loads the thumbnail only once the card scrolls into view. */
@@ -53,9 +54,32 @@ interface Props {
 
 export function ClipCard({ clip, onOpen, selected, selecting, onToggle }: Props) {
   const { ref, src } = useLazyThumbnail(clip.path);
+  // Dragging the card out (into Discord, Explorer…) drags the file itself.
+  const press = useRef<{ x: number; y: number } | null>(null);
+  const dragged = useRef(false);
   return (
     <div
       ref={ref}
+      title="Drag into Discord or a folder to share the file"
+      onPointerDown={(e) => {
+        if (e.button === 0) press.current = { x: e.clientX, y: e.clientY };
+        dragged.current = false;
+      }}
+      onPointerUp={() => (press.current = null)}
+      onPointerMove={(e) => {
+        const p = press.current;
+        if (!p || Math.abs(e.clientX - p.x) + Math.abs(e.clientY - p.y) < 6) return;
+        press.current = null;
+        dragged.current = true;
+        void dragFile(clip.path);
+      }}
+      onClickCapture={(e) => {
+        // The click that ends a drag must not open the clip.
+        if (dragged.current) {
+          e.stopPropagation();
+          dragged.current = false;
+        }
+      }}
       className={cx(
         "group relative overflow-hidden rounded-lg border bg-zinc-900/60 transition-colors",
         selected ? "border-sky-500 ring-1 ring-sky-500" : "border-zinc-800 hover:border-zinc-600",

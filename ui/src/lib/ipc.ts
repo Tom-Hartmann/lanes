@@ -26,6 +26,8 @@ export interface EncoderSettings {
   preset: EncoderPreset;
   audioCodec: AudioCodec;
   audioBitrateKbps: number;
+  /** Also write all lanes mixed into one track, first in the file (for Discord & co). */
+  mixTrack: boolean;
 }
 
 export type CaptureMode = "followGame" | "monitors" | "window";

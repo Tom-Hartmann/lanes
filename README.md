@@ -38,7 +38,8 @@ Save the play that just happened.
 - Feedback on save that never steals focus: a chime on the output device you pick, an on-screen notice in a corner with your own text, and/or a Windows notification, each with a Test button
 
 ### Audio lanes
-Every source on its own track, so you can edit them separately later.
+Every source on its own track, so you can edit them separately later. With two or more lanes, files
+start with a track of all lanes mixed, so Discord, browsers and phones play everything.
 - Name your lanes: Game, Discord, Mic, Music…
 - Sources: system audio, a single app, the detected game only, or any microphone
 - System audio can leave out one app (e.g. your music player), so that app gets its own lane and volume
@@ -70,6 +71,7 @@ Every source on its own track, so you can edit them separately later.
 - Audio mix after the fact: volume, mute and solo for every lane while watching (no 3-source limit), remembered per clip, saved as a mixed copy
 - Play with slow motion (down to 0.1x) and keyboard controls (? shows them), trim losslessly, convert to MP4
 - Share: one-click copy with your audio mix in one track and sized for Discord; drag it out, copy it (Ctrl+V in Discord) or send it to a Discord channel via webhook
+- Drag a clip straight from the library or the viewer into Discord, a chat or a folder
 - Select several clips (or all) and delete them to the recycle bin, or show a file in its folder
 
 ### Hotkeys

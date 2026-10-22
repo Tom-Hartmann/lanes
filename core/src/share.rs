@@ -47,8 +47,12 @@ pub fn export(src: &Path, dst: &Path, opts: &ShareOptions) -> Result<ShareResult
         .map(|(i, _)| i)
         .collect();
     // (track, stream index) pairs.
+    // "All" means the lanes: a mixed track (see `EncoderSettings::mix_track`)
+    // already contains them and would double them.
+    let titles = crate::media::audio_track_titles(src).unwrap_or_default();
+    let is_mix = |k: usize| audio_streams.len() > 1 && titles.get(k).is_some_and(|t| t == crate::config::MIX_TRACK_TITLE);
     let chosen: Vec<(usize, usize)> = match &opts.audio_tracks {
-        None => audio_streams.iter().copied().enumerate().collect(),
+        None => audio_streams.iter().copied().enumerate().filter(|&(k, _)| !is_mix(k)).collect(),
         Some(sel) => sel.iter().filter_map(|&k| audio_streams.get(k).map(|&i| (k, i))).collect(),
     };
     // SAFETY: valid context.

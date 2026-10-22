@@ -684,6 +684,15 @@ impl Control {
             .map(|(i, _)| StreamId::Audio(i as u8))
             .filter(|id| session.audio.as_ref().is_some_and(|a| a.streams.iter().any(|s| s.id == *id)))
             .collect();
+        // The full mix only goes into files that get every lane (a preset
+        // that leaves out e.g. the mic must not have it in a mix either).
+        let mix = StreamId::Audio(crate::config::MIX_STREAM);
+        let all_lanes = lanes.is_none_or(|sel| self.config.audio.lanes.iter().all(|l| sel.contains(&l.id)));
+        let audio_ids: Vec<StreamId> = if all_lanes && session.audio.as_ref().is_some_and(|a| a.streams.iter().any(|s| s.id == mix)) {
+            std::iter::once(mix).chain(audio_ids).collect()
+        } else {
+            audio_ids
+        };
         let multi = session.video.len() > 1;
         session
             .video

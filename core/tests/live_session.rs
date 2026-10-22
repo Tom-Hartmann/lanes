@@ -94,6 +94,10 @@ fn record_then_clip() {
     eprintln!("recording {} -> {secs:.2} s, {} bytes", rec.display(), std::fs::metadata(rec).unwrap().len());
     assert_eq!(rec.extension().unwrap(), "mp4");
     assert!((3.0..6.0).contains(&secs), "duration {secs}");
+    // The mixed track comes first, then the lanes.
+    let titles = lanes_core::media::audio_track_titles(rec).unwrap();
+    eprintln!("audio tracks: {titles:?}");
+    assert_eq!(titles, [lanes_core::config::MIX_TRACK_TITLE, "Game", "Mic"]);
 
     // Replay buffer + clip of the last 2 seconds.
     engine.start_replay();
@@ -103,6 +107,7 @@ fn record_then_clip() {
     let clip_secs = lanes_core::media::duration(Path::new(&clip.path)).expect("readable clip");
     eprintln!("clip {} -> {clip_secs:.2} s", clip.path);
     assert!((1.5..4.5).contains(&clip_secs), "clip duration {clip_secs}");
+    assert_eq!(lanes_core::media::audio_track_titles(Path::new(&clip.path)).unwrap()[0], lanes_core::config::MIX_TRACK_TITLE);
     let thumb = lanes_core::media::thumbnail(Path::new(&clip.path), 160).unwrap();
     assert!(thumb.starts_with("data:image/bmp;base64,"));
 
