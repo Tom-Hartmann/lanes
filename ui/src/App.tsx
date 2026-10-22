@@ -22,6 +22,8 @@ import { ProfilesPage } from "./pages/profiles/ProfilesPage";
 import { SettingsPage } from "./pages/settings/SettingsPage";
 import { SourcesPage } from "./pages/sources/SourcesPage";
 import { useAppInfoStore } from "./store/appInfoStore";
+import { PendingRestart } from "./components/PendingRestart";
+import { UpdateNotice } from "./components/UpdateNotice";
 import { useHotkeyStore } from "./store/hotkeyStore";
 import { useLogStore } from "./store/logStore";
 import { notify } from "./store/noticeStore";
@@ -135,6 +137,7 @@ export default function App() {
         ))}
         <div className="mt-auto flex flex-col gap-3 pb-1">
           <CaptureIndicator />
+          {info && <UpdateNotice current={info.version} />}
           {info && (
             <div className="flex items-center justify-between px-3 text-xs text-zinc-500">
               <span>v{info.version}</span>
@@ -156,6 +159,7 @@ export default function App() {
         </div>
       </nav>
       <main className="@container min-w-0 flex-1 overflow-y-auto">
+        <PendingRestart />
         {(loadError || saveError) && (
           <div className="sticky top-0 z-20 flex items-center gap-3 border-b border-red-900/60 bg-red-950/90 px-6 py-2 text-xs text-red-200 backdrop-blur">
             <span className="min-w-0 flex-1 break-words select-text">

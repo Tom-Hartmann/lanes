@@ -6,6 +6,8 @@ interface Props {
   start: number;
   end: number;
   playhead: number;
+  /** Bookmarks (seconds), drawn as markers; click one to jump there. */
+  markers?: number[];
   onChange: (start: number, end: number) => void;
   onSeek: (t: number) => void;
 }
@@ -13,7 +15,7 @@ interface Props {
 const MIN_LEN = 0.5;
 
 /** A timeline with two draggable handles (start/end) and a playhead. Click the track to seek. */
-export function TrimBar({ duration, start, end, playhead, onChange, onSeek }: Props) {
+export function TrimBar({ duration, start, end, playhead, markers = [], onChange, onSeek }: Props) {
   const track = useRef<HTMLDivElement>(null);
   const dragging = useRef<"start" | "end" | null>(null);
 
@@ -65,6 +67,19 @@ export function TrimBar({ duration, start, end, playhead, onChange, onSeek }: Pr
     >
       {/* Kept region */}
       <div className="absolute top-0 bottom-0 bg-sky-500/20" style={{ left: pct(start), width: `calc(${pct(end)} - ${pct(start)})` }} />
+      {markers.map((m, i) => (
+        <button
+          key={i}
+          type="button"
+          title={`Bookmark at ${m.toFixed(1)} s`}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            onSeek(m);
+          }}
+          className="absolute -top-1.5 z-20 h-3 w-3 -translate-x-1/2 rotate-45 rounded-[2px] bg-amber-400 hover:bg-amber-300"
+          style={{ left: pct(m) }}
+        />
+      ))}
       {/* Playhead */}
       <div className="absolute top-0 bottom-0 w-0.5 bg-zinc-100" style={{ left: pct(playhead) }} />
       {handle("start")}

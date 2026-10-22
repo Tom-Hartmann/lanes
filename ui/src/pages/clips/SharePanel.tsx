@@ -81,11 +81,20 @@ async function sendToDiscord(webhook: string, path: string, message: string, onP
   });
 }
 
-export function SharePanel({ clip, mix, mixed, hasAudio }: { clip: ClipInfo; mix: MixChoice; mixed: boolean; hasAudio: boolean }) {
+interface Props {
+  clip: ClipInfo;
+  mix: MixChoice;
+  mixed: boolean;
+  hasAudio: boolean;
+  /** A new file was written into the library folder. */
+  onSaved: () => void;
+}
+
+export function SharePanel({ clip, mix, mixed, hasAudio, onSaved }: Props) {
   const settings = useSettingsStore((s) => s.settings);
   const game = useStatusStore((s) => s.status?.game?.name);
   const [maxMb, setMaxMb] = useState(String(settings?.share.maxMb ?? 10));
-  const [busy, setBusy] = useState<"export" | "send" | null>(null);
+  const [busy, setBusy] = useState<"export" | "send" | "mixed" | null>(null);
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<ShareResult | null>(null);
 
@@ -102,6 +111,21 @@ export function SharePanel({ clip, mix, mixed, hasAudio }: { clip: ClipInfo; mix
       setResult(r);
     } catch (err) {
       notify({ kind: "error", title: "Share copy failed", body: errorMessage(err) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Full quality, one mixed track, next to the share copies.
+  const saveMixed = async () => {
+    setBusy("mixed");
+    try {
+      if (mix.tracks?.length === 0 && hasAudio) throw new Error("every lane is muted in the audio mix");
+      const r = await api.shareClip(clip.path, mix.tracks, mix.gainsDb, 0);
+      notify({ kind: "success", title: "Mixed copy saved", body: r.path, action: { label: "Show in folder", run: () => void api.revealClip(r.path) } });
+      onSaved();
+    } catch (err) {
+      notify({ kind: "error", title: "Mixed copy failed", body: errorMessage(err) });
     } finally {
       setBusy(null);
     }
@@ -134,6 +158,11 @@ export function SharePanel({ clip, mix, mixed, hasAudio }: { clip: ClipInfo; mix
           {!hasAudio ? "No audio" : mixed ? "Uses your audio mix above" : "All lanes mixed into one track"}
         </span>
         <div className="ml-auto flex items-center gap-2">
+          {hasAudio && mixed && (
+            <Button size="sm" variant="ghost" onClick={() => void saveMixed()} disabled={busy !== null} title="Full quality copy with the audio mix in one track">
+              {busy === "mixed" && <Spinner />} Save mixed copy
+            </Button>
+          )}
           <Select value={maxMb} onChange={setMaxMb} options={SIZE_OPTIONS} />
           <Button size="sm" onClick={() => void exportCopy()} disabled={busy !== null}>
             {busy === "export" && <Spinner />} Create share copy

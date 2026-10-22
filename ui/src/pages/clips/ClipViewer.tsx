@@ -1,13 +1,13 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { IconFolder, IconScissors, IconX } from "../../components/icons";
+import { IconFolder, IconPlay, IconScissors, IconX } from "../../components/icons";
 import { Badge, Button, Callout, ConfirmButton, NumberInput, Spinner } from "../../components/ui";
 import { formatBytes, formatDate, formatDuration } from "../../lib/format";
 import { api, errorMessage, type ClipInfo } from "../../lib/ipc";
 import { actionForKey, keyLabel, resolveViewerKeys, VIEWER_ACTIONS } from "../../lib/viewerKeys";
 import { attempt, notify } from "../../store/noticeStore";
 import { useSettingsStore } from "../../store/settingsStore";
-import { LaneMixerPanel, useLaneMixer } from "./LaneMixer";
+import { LaneMixerPanel, resumeAudio, useLaneMixer } from "./LaneMixer";
 import { forgetThumbnail } from "./thumbnails";
 import { SharePanel } from "./SharePanel";
 import { TrimBar } from "./TrimBar";
@@ -33,6 +33,21 @@ function loadSpeed(): number {
     return 1;
   }
 }
+
+const VOLUME_KEY = "lanes.viewerVolume";
+
+function loadVolume(): { volume: number; muted: boolean } {
+  try {
+    const v = JSON.parse(localStorage.getItem(VOLUME_KEY) ?? "null") as { volume?: unknown; muted?: unknown } | null;
+    const volume = typeof v?.volume === "number" ? Math.min(Math.max(v.volume, 0), 1) : 1;
+    return { volume, muted: v?.muted === true };
+  } catch {
+    return { volume: 1, muted: false };
+  }
+}
+
+/** m:ss.t, so playback visibly advances even in slow motion. */
+const formatTime = (t: number) => `${formatDuration(t)}.${Math.floor((Math.max(0, t) % 1) * 10)}`;
 
 function saveSpeed(v: number) {
   try {
@@ -67,7 +82,67 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
     saveSpeed(v);
   };
   const show = (text: string) => setFlash({ text, id: Date.now() });
-  const mixer = useLaneMixer(video, src, clip.path);
+  const [{ volume, muted }, setVolumeState] = useState(loadVolume);
+  const setVolume = (p: Partial<{ volume: number; muted: boolean }>) =>
+    setVolumeState((cur) => {
+      const next = { ...cur, ...p };
+      try {
+        localStorage.setItem(VOLUME_KEY, JSON.stringify(next));
+      } catch {
+        // Not remembered; fine.
+      }
+      return next;
+    });
+  const [playing, setPlaying] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const player = useRef<HTMLDivElement>(null);
+  const mixer = useLaneMixer(video, src, clip, muted ? 0 : volume);
+
+  // While the lane mix plays, the video itself stays muted (see LaneMixer).
+  useEffect(() => {
+    const v = video.current;
+    if (!v) return;
+    v.muted = mixer.ready || muted;
+    v.volume = volume;
+  }, [mixer.ready, muted, volume, src]);
+
+  // Smooth playhead while playing (timeupdate only fires ~4 times a second).
+  useEffect(() => {
+    if (!playing) return;
+    let id = 0;
+    const tick = () => {
+      if (video.current) setPlayhead(video.current.currentTime);
+      id = requestAnimationFrame(tick);
+    };
+    id = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(id);
+  }, [playing]);
+
+  useEffect(() => {
+    const onFs = () => setFullscreen(document.fullscreenElement === player.current && player.current !== null);
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+  const togglePlay = () => {
+    const v = video.current;
+    if (!v) return;
+    resumeAudio();
+    if (v.paused) void v.play();
+    else v.pause();
+  };
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void player.current?.requestFullscreen();
+  };
+  const markers = useMemo(() => [...clip.markers].sort((a, b) => a - b), [clip.markers]);
+  const jumpMarker = (dir: 1 | -1) => {
+    const now = video.current?.currentTime ?? playhead;
+    // Small tolerance, so pressing again moves on instead of re-hitting the same marker.
+    const m = dir > 0 ? markers.find((x) => x > now + 0.25) : [...markers].reverse().find((x) => x < now - 0.25);
+    if (m === undefined) return show(markers.length ? "No more bookmarks" : "No bookmarks in this clip");
+    seek(m);
+    show(`Bookmark ${markers.indexOf(m) + 1}/${markers.length}`);
+  };
 
   useEffect(() => {
     let alive = true;
@@ -140,9 +215,8 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
     switch (action) {
       case "playPause":
         if (v) {
-          if (v.paused) void v.play();
-          else v.pause();
-          show(v.paused ? "Pause" : "Play");
+          show(v.paused ? "Play" : "Pause");
+          togglePlay();
         }
         break;
       case "back":
@@ -194,15 +268,18 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
       case "preview":
         preview();
         break;
+      case "prevMarker":
+        jumpMarker(-1);
+        break;
+      case "nextMarker":
+        jumpMarker(1);
+        break;
       case "mute":
-        if (v) {
-          v.muted = !v.muted;
-          show(v.muted ? "Muted" : "Sound on");
-        }
+        setVolume({ muted: !muted });
+        show(muted ? "Sound on" : "Muted");
         break;
       case "fullscreen":
-        if (document.fullscreenElement) void document.exitFullscreen();
-        else void v?.requestFullscreen();
+        toggleFullscreen();
         break;
       case "help":
         setHelp((h) => !h);
@@ -255,7 +332,13 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
   const trimmed = start > 0.05 || end < duration - 0.05;
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
+      onPointerDown={(e) => {
+        resumeAudio();
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
       <div className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900 shadow-2xl">
         <header className="flex items-center gap-2 border-b border-zinc-800 px-4 py-2">
           <Badge tone={clip.kind === "clip" ? "sky" : "neutral"}>{clip.kind === "clip" ? "Clip" : "Recording"}</Badge>
@@ -271,7 +354,8 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="relative flex aspect-video max-h-[55vh] w-full items-center justify-center bg-black">
+          <div ref={player} className={fullscreen ? "flex h-full flex-col bg-black" : "bg-black"}>
+          <div className={`relative flex w-full items-center justify-center bg-black ${fullscreen ? "min-h-0 flex-1" : "aspect-video max-h-[55vh]"}`}>
             {flash && (
               <div
                 key={flash.id}
@@ -314,9 +398,12 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
               <video
                 ref={video}
                 src={src}
-                controls
                 autoPlay
-                className="h-full w-full"
+                onClick={togglePlay}
+                onPlay={() => setPlaying(true)}
+                onPause={() => setPlaying(false)}
+                onEnded={() => setPlaying(false)}
+                className="h-full w-full cursor-pointer"
                 onLoadedMetadata={(e) => {
                   const d = e.currentTarget.duration;
                   if (Number.isFinite(d) && d > 0) {
@@ -335,6 +422,37 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
                 onSeeking={() => (previewEnd.current = null)}
               />
             )}
+          </div>
+          <div className="flex items-center gap-3 border-b border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs text-zinc-300">
+            <button type="button" onClick={togglePlay} disabled={!src} className="rounded p-1 hover:bg-zinc-800" title={playing ? "Pause" : "Play"}>
+              {playing ? <span className="block h-3.5 w-3.5 border-x-4 border-current" /> : <IconPlay size={14} />}
+            </button>
+            <span className="font-mono tabular-nums">
+              {formatTime(playhead)} <span className="text-zinc-500">/ {formatTime(duration)}</span>
+            </span>
+            <span className="flex-1" />
+            <button
+              type="button"
+              onClick={() => setVolume({ muted: !muted })}
+              className={`rounded px-1.5 py-0.5 ${muted ? "bg-red-600/80 text-white" : "hover:bg-zinc-800"}`}
+              title={muted ? "Unmute" : "Mute"}
+            >
+              {muted ? "Muted" : "Vol"}
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={volume}
+              onChange={(e) => setVolume({ volume: Number(e.target.value), muted: false })}
+              className="w-24 accent-sky-500"
+              aria-label="Volume"
+            />
+            <button type="button" onClick={toggleFullscreen} className="rounded px-1.5 py-0.5 hover:bg-zinc-800" title="Fullscreen (F)">
+              {fullscreen ? "Exit fullscreen" : "Fullscreen"}
+            </button>
+          </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-1 border-b border-zinc-800 px-4 py-2 text-xs">
@@ -371,6 +489,7 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
                 start={start}
                 end={end}
                 playhead={playhead}
+                markers={markers}
                 onSeek={seek}
                 onChange={(s, e) => setRange([s, e])}
               />
@@ -408,6 +527,30 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
                 Preview selection
               </Button>
             </div>
+            {markers.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                <span className="text-zinc-500">Bookmarks</span>
+                {markers.map((m, i) => (
+                  <span key={i} className="flex items-center overflow-hidden rounded-md border border-amber-500/40">
+                    <button type="button" onClick={() => seek(m)} className="px-2 py-0.5 font-mono text-amber-300 hover:bg-amber-500/10" title="Jump here">
+                      {formatDuration(m)}
+                    </button>
+                    <button
+                      type="button"
+                      title="Trim to 10 s before and 5 s after this bookmark"
+                      onClick={() => {
+                        const s = Math.max(0, m - 10);
+                        setRange([s, Math.min(duration || m + 5, Math.max(m + 5, s + 0.5))]);
+                        seek(s);
+                      }}
+                      className="border-l border-amber-500/40 px-1.5 py-0.5 text-zinc-400 hover:bg-amber-500/10 hover:text-zinc-200"
+                    >
+                      <IconScissors size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
             <Callout>
               Trimming is lossless and instant: cuts snap to the nearest keyframe, so the copy may start up to a keyframe
               interval earlier than the selection.
@@ -415,7 +558,7 @@ export function ClipViewer({ clip, onClose, onChanged }: Props) {
           </div>
         </div>
 
-        <SharePanel clip={clip} mix={mixer.choice} mixed={mixer.changed} hasAudio={(mixer.titles?.length ?? 0) > 0} />
+        <SharePanel clip={clip} mix={mixer.choice} mixed={mixer.changed} hasAudio={(mixer.titles?.length ?? 0) > 0} onSaved={onChanged} />
 
         <footer className="flex flex-wrap items-center gap-2 border-t border-zinc-800 px-4 py-2.5">
           <Button size="sm" variant="primary" disabled={!trimmed || busy !== null || duration <= 0} onClick={() => void trim()}>

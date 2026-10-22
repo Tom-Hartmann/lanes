@@ -1,5 +1,6 @@
 import { IconDown, IconUp, IconX } from "../../components/icons";
 import { LaneMeter } from "../../components/Meter";
+import { useStatusStore } from "../../store/statusStore";
 import { ConfirmButton, cx, DbSlider, TextInput, ToggleChip } from "../../components/ui";
 import type { AudioLayout, Lane } from "../../lib/ipc";
 import type { SaveMode } from "../../store/settingsStore";
@@ -18,6 +19,8 @@ interface Props {
 
 export function LaneCard({ lane, index, layout, edit }: Props) {
   const feeding = layout.sources.filter((s) => s.lanes.includes(lane.id));
+  const sessionLanes = useStatusStore((s) => s.status?.sessionLanes);
+  const live = !sessionLanes || sessionLanes.length === 0 || sessionLanes.includes(lane.id);
   const drop = useSourceDrop((d, copy) =>
     edit((a) =>
       d.fromLane && !copy ? moveAssignment(a, d.sourceId, d.fromLane, lane.id) : setAssigned(a, d.sourceId, lane.id, true),
@@ -77,7 +80,13 @@ export function LaneCard({ lane, index, layout, edit }: Props) {
 
       <div className="mt-2 flex items-center gap-3 pl-7">
         <DbSlider value={lane.volumeDb} onChange={(volumeDb) => patch({ volumeDb }, "debounced")} className="w-48 max-w-[50%]" />
-        <LaneMeter id={lane.id} className="flex-1" />
+        {live ? (
+          <LaneMeter id={lane.id} className="flex-1" />
+        ) : (
+          <span className="flex-1 text-xs text-amber-400/90" title="Lanes added while capturing are recorded after a restart">
+            Not in the running capture yet
+          </span>
+        )}
       </div>
 
       <div className="mt-2 flex min-h-8 flex-wrap items-center gap-1.5 pl-7">

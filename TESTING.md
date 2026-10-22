@@ -91,6 +91,7 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 ## Games & profiles
 
 - [ ] Game from the game list detected; Dashboard shows it
+- [ ] "Not a game" on the Dashboard: the program is dropped and stays ignored (listed under Profiles → Game detection, removable)
 - [x] Unknown fullscreen game detected by the heuristic, also when not focused
 - [ ] Profile switches automatically when the game starts and back when it exits
 - [ ] Create, duplicate, rename, delete profiles; per-profile replay length
@@ -103,6 +104,12 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 - [ ] Multi-select: checkbox on hover, click/Ctrl-click/Shift-click, "Select all", Ctrl+A, Esc, "Delete N" to the recycle bin
 - [ ] Audio mix in the viewer: every lane audible, per-lane volume / mute / solo, stays in sync when seeking and in slow motion
 - [ ] Share copy uses the audio mix (lane gains and mutes)
+- [ ] Viewer playback is smooth with the lane mix; own control bar: time advances (tenths), play/pause, volume/mute (remembered), fullscreen keeps the bar
+- [ ] Adding a lane while buffering: lane shows "Not in the running capture yet", top bar "Restart capture now" applies it (refused while recording)
+- [ ] Audio mix is remembered when the clip is opened again; "Save mixed copy" writes a full-quality copy
+- [ ] Bookmarks: hotkey / Dashboard button gives sound + notice; markers on the timeline of clips and recordings (pauses skipped), B / N jump, scissors trims around one; a trimmed copy keeps its markers
+- [ ] Game chips with counts, "Other" for unknown, sort options; old clips get their game from the file name
+- [ ] Update notice in the sidebar when GitHub has a newer release; opens the release page (not elevated); off in Settings → General
 - [ ] Show in folder / open output folder
 - [ ] Search and the clip/recording filter
 - [ ] Slow motion: speed bar 0.1x-2x, pitch stays natural, speed remembered

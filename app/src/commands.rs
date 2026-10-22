@@ -163,6 +163,17 @@ pub fn save_clip(app: AppHandle, preset_id: String) {
     actions::dispatch(&app, &Action::SaveClip(preset_id), Trigger::Ui, Timestamp::now(), None);
 }
 
+/// Restarts the capture so lane/video/encoder changes apply (empties the replay buffer).
+#[tauri::command]
+pub fn apply_capture_changes(state: State<'_, AppState>) {
+    state.with_engine(|e| e.apply_changes());
+}
+
+#[tauri::command]
+pub fn bookmark(app: AppHandle) {
+    actions::dispatch(&app, &Action::Bookmark, Trigger::Ui, Timestamp::now(), None);
+}
+
 // -------------------------------------------------------------- sources ---
 
 #[tauri::command]
@@ -329,7 +340,7 @@ pub async fn remux_clip(app: AppHandle, path: String) -> CmdResult<String> {
         let dir = p.parent().unwrap_or(Path::new("."));
         let out = naming::unique_path(dir, &p.file_stem().unwrap_or_default().to_string_lossy(), "mp4");
         lanes_core::media::remux(&p, &out).map_err(err)?;
-        state.library.add(&out, kind_of(&state, &p));
+        state.library.add_copy(&p, &out, kind_of(&state, &p), None);
         Ok(out.to_string_lossy().into_owned())
     })
     .await
@@ -344,7 +355,7 @@ pub async fn trim_clip(app: AppHandle, path: String, start_secs: f64, end_secs: 
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_string();
         let out = naming::unique_path(dir, &format!("{}_trim", p.file_stem().unwrap_or_default().to_string_lossy()), &ext);
         lanes_core::media::trim(&p, &out, start_secs, end_secs).map_err(err)?;
-        state.library.add(&out, library::Kind::Clip);
+        state.library.add_copy(&p, &out, library::Kind::Clip, Some((start_secs, end_secs)));
         Ok(out.to_string_lossy().into_owned())
     })
     .await
@@ -409,12 +420,22 @@ pub fn drag_clip(state: State<'_, AppState>, path: String) -> CmdResult<bool> {
 }
 
 fn kind_of(state: &AppState, path: &Path) -> library::Kind {
-    state
-        .library
-        .list(&[path.parent().unwrap_or(Path::new(".")).to_path_buf()])
-        .into_iter()
-        .find(|c| Path::new(&c.path) == path)
-        .map_or(library::Kind::Recording, |c| c.kind)
+    state.library.kind(path).unwrap_or(library::Kind::Recording)
+}
+
+/// Remembers the clip viewer's audio mix for a file (`null` clears it).
+#[tauri::command]
+pub fn set_clip_mix(state: State<'_, AppState>, path: String, mix: Option<serde_json::Value>) -> CmdResult<()> {
+    let p = checked_path(&state, &path)?;
+    state.library.set_mix(&p, mix);
+    Ok(())
+}
+
+/// Opens the GitHub releases page in the default browser. Explorer starts it
+/// as the logged-on user, so the browser does not inherit admin rights.
+#[tauri::command]
+pub fn open_releases_page() -> CmdResult<()> {
+    open_explorer("https://github.com/Tom-Hartmann/lanes/releases/latest")
 }
 
 fn open_explorer(args: &str) -> CmdResult<()> {

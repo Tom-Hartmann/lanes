@@ -26,6 +26,8 @@ export const VIEWER_ACTIONS: ViewerAction[] = [
   { id: "trimStart", label: "Set trim start at playhead", defaults: ["i"] },
   { id: "trimEnd", label: "Set trim end at playhead", defaults: ["o"] },
   { id: "preview", label: "Preview trim selection", defaults: ["p"] },
+  { id: "prevMarker", label: "Previous bookmark", defaults: ["b"] },
+  { id: "nextMarker", label: "Next bookmark", defaults: ["n"] },
   { id: "mute", label: "Mute / unmute", defaults: ["m"] },
   { id: "fullscreen", label: "Fullscreen", defaults: ["f"] },
   { id: "help", label: "Show shortcuts", defaults: ["?"] },

@@ -1,4 +1,4 @@
-import { IconPlus } from "../../components/icons";
+import { IconPlus, IconX } from "../../components/icons";
 import { Button, Card, Field, PageHeader, Toggle } from "../../components/ui";
 import type { GameDetectionSettings } from "../../lib/ipc";
 import { DEFAULT_VIDEO, defaultAudio, newId, uniqueName } from "../../lib/settings";
@@ -55,6 +55,25 @@ export function ProfilesPage() {
         </Field>
         <Field label="Switch profile automatically" hint="Activates the game's profile when it starts." disabled={!det.enabled}>
           <Toggle disabled={!det.enabled} checked={det.autoSwitchProfile} onChange={(autoSwitchProfile) => setDet({ autoSwitchProfile })} />
+        </Field>
+        <Field label="Not games" hint='Programs you marked "Not a game" on the Dashboard. Click one to allow it again.'>
+          {det.ignored.length === 0 ? (
+            <span className="text-xs text-zinc-500">None</span>
+          ) : (
+            <div className="flex flex-wrap justify-end gap-1.5">
+              {det.ignored.map((exe) => (
+                <button
+                  key={exe}
+                  type="button"
+                  title="Allow again"
+                  onClick={() => setDet({ ignored: det.ignored.filter((x) => x !== exe) })}
+                  className="flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-0.5 font-mono text-xs text-zinc-300 hover:border-zinc-500"
+                >
+                  {exe} <IconX size={12} />
+                </button>
+              ))}
+            </div>
+          )}
         </Field>
       </Card>
       <GamesSection settings={settings} />

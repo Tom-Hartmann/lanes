@@ -25,14 +25,17 @@ pub fn start(app: AppHandle) {
                     .filter(|g| g.enabled)
                     .map(|g| KnownGame { exe: g.exe.clone(), name: g.name.clone(), profile: g.profile.clone() })
                     .collect();
-                games::detect(&known, settings.game_detection.fullscreen_heuristic)
+                games::detect(&known, settings.game_detection.fullscreen_heuristic, &settings.game_detection.ignored)
             } else {
                 None
             };
             // Alt-tabbing out (e.g. into Lanes) must not lose the game: keep it
             // while its process runs and nothing else was detected.
             if detected.is_none() && settings.game_detection.enabled
-                && let Some(g) = current.as_ref().filter(|g| games::still_running(g)) {
+                && let Some(g) = current
+                    .as_ref()
+                    .filter(|g| !settings.game_detection.ignored.iter().any(|i| i.eq_ignore_ascii_case(&g.exe)))
+                    .filter(|g| games::still_running(g)) {
                     detected = Some(g.clone());
                 }
             let same = |a: &Option<DetectedGame>, b: &Option<DetectedGame>| {

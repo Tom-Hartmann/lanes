@@ -1,12 +1,13 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Button, DbSlider, Spinner, ToggleChip } from "../../components/ui";
-import { api, errorMessage } from "../../lib/ipc";
+import { api, errorMessage, type ClipInfo } from "../../lib/ipc";
 
 // The <video> only plays a file's first audio track, so the viewer plays
 // every lane as its own (cached, extracted) audio file through a WebAudio gain
-// node, kept in sync with the video. The video's own sound is silenced; its
-// volume and mute controls act as the master.
+// node, kept in sync with the video. While the mix is ready the viewer mutes
+// the video itself (it must stay out of WebAudio: a suspended AudioContext
+// would stall the video's clock) and passes its volume in as `master`.
 
 export interface LaneMix {
   gainDb: number;
@@ -25,8 +26,30 @@ const dbToGain = (db: number) => (db <= MIN_DB ? 0 : 10 ** (db / 20));
 const audible = (lanes: LaneMix[], i: number) =>
   lanes.some((l) => l.solo) ? lanes[i].solo && !lanes[i].muted : !lanes[i].muted && lanes[i].gainDb > MIN_DB;
 
+/** Mixes saved in this session, newer than the clip list the viewer was opened from. */
+const savedMixes = new Map<string, LaneMix[] | null>();
+
+function initialMix(clip: ClipInfo, count: number): LaneMix[] {
+  const saved = savedMixes.has(clip.path) ? savedMixes.get(clip.path) : clip.mix;
+  const fresh = () => ({ gainDb: 0, muted: false, solo: false });
+  if (!Array.isArray(saved)) return Array.from({ length: count }, fresh);
+  return Array.from({ length: count }, (_, i) => {
+    const x = saved[i] as Partial<LaneMix> | undefined;
+    return {
+      gainDb: typeof x?.gainDb === "number" ? x.gainDb : 0,
+      muted: x?.muted === true,
+      solo: x?.solo === true,
+    };
+  });
+}
+
+/** What is stored: the lanes, or null for the default (all at 0 dB). */
+const mixPayload = (lanes: LaneMix[]) => (lanes.some((l) => l.gainDb !== 0 || l.muted || l.solo) ? lanes : null);
+
 let ctx: AudioContext | null = null;
 const audioContext = () => (ctx ??= new AudioContext());
+/** Browsers start an AudioContext suspended until a user gesture; call from one. */
+export const resumeAudio = () => void ctx?.resume();
 // createMediaElementSource works once per element.
 const sources = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
 function sourceFor(el: HTMLMediaElement) {
@@ -38,30 +61,52 @@ function sourceFor(el: HTMLMediaElement) {
   return s;
 }
 
-export function useLaneMixer(video: RefObject<HTMLVideoElement | null>, src: string | null, path: string) {
+export function useLaneMixer(video: RefObject<HTMLVideoElement | null>, src: string | null, clip: ClipInfo, master: number) {
+  const path = clip.path;
   const [titles, setTitles] = useState<string[] | null>(null);
   const [lanes, setLanes] = useState<LaneMix[]>([]);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const gains = useRef<GainNode[]>([]);
-  const master = useRef(1);
+  const loaded = useRef(false);
+  /** Last mix written for this file, so opening a clip does not rewrite it. */
+  const lastSaved = useRef("");
 
   useEffect(() => {
     let alive = true;
+    loaded.current = false;
     setTitles(null);
     setError(null);
     api.clipTracks(path).then(
       (t) => {
         if (!alive) return;
+        const initial = initialMix(clip, t.length);
+        lastSaved.current = JSON.stringify(mixPayload(initial));
         setTitles(t);
-        setLanes(t.map(() => ({ gainDb: 0, muted: false, solo: false })));
+        setLanes(initial);
+        loaded.current = true;
       },
       () => alive && setTitles([]),
     );
     return () => {
       alive = false;
     };
+    // Only reload for another file (clip.mix is read once, when it opens).
   }, [path]);
+
+  // Remember the mix with the clip (debounced), so it is there next time.
+  useEffect(() => {
+    if (!loaded.current) return;
+    const payload = mixPayload(lanes);
+    const json = JSON.stringify(payload);
+    if (json === lastSaved.current) return;
+    const t = window.setTimeout(() => {
+      lastSaved.current = json;
+      savedMixes.set(path, payload);
+      api.setClipMix(path, payload).catch(() => {});
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [lanes, path]);
 
   const trackCount = titles?.length ?? 0;
   useEffect(() => {
@@ -75,9 +120,6 @@ export function useLaneMixer(video: RefObject<HTMLVideoElement | null>, src: str
       (files) => {
         if (!alive) return;
         const ac = audioContext();
-        // Silence the video's own audio (its first track) without touching
-        // its volume/mute controls, which stay the master.
-        sourceFor(v);
         gains.current = files.map((f) => {
           const a = new Audio();
           a.crossOrigin = "anonymous";
@@ -93,7 +135,8 @@ export function useLaneMixer(video: RefObject<HTMLVideoElement | null>, src: str
         const sync = (force: boolean) => {
           for (const a of audios) {
             a.playbackRate = v.playbackRate;
-            if (force || Math.abs(a.currentTime - v.currentTime) > 0.08) a.currentTime = v.currentTime;
+            // Re-seeking audio glitches, so only correct real drift.
+            if (force || Math.abs(a.currentTime - v.currentTime) > 0.15) a.currentTime = v.currentTime;
           }
         };
         const play = () => {
@@ -105,10 +148,6 @@ export function useLaneMixer(video: RefObject<HTMLVideoElement | null>, src: str
           for (const a of audios) a.pause();
           sync(true);
         };
-        const volume = () => {
-          master.current = v.muted ? 0 : v.volume;
-          setLanes((l) => [...l]); // re-apply gains
-        };
         const handlers: [string, () => void][] = [
           ["play", play],
           ["playing", play],
@@ -117,13 +156,11 @@ export function useLaneMixer(video: RefObject<HTMLVideoElement | null>, src: str
           ["seeked", () => sync(true)],
           ["ratechange", () => sync(false)],
           ["timeupdate", () => !v.paused && sync(false)],
-          ["volumechange", volume],
         ];
         for (const [ev, fn] of handlers) {
           v.addEventListener(ev, fn);
           cleanup.push(() => v.removeEventListener(ev, fn));
         }
-        volume();
         if (!v.paused) play();
         setReady(true);
       },
@@ -146,9 +183,9 @@ export function useLaneMixer(video: RefObject<HTMLVideoElement | null>, src: str
   // Apply the lane gains (and the master).
   useEffect(() => {
     gains.current.forEach((g, i) => {
-      if (lanes[i]) g.gain.value = audible(lanes, i) ? dbToGain(lanes[i].gainDb) * master.current : 0;
+      if (lanes[i]) g.gain.value = audible(lanes, i) ? dbToGain(lanes[i].gainDb) * master : 0;
     });
-  }, [lanes, ready]);
+  }, [lanes, ready, master]);
 
   const choice: MixChoice = useMemo(() => {
     const on = lanes.map((_, i) => audible(lanes, i));
@@ -174,7 +211,9 @@ export function LaneMixerPanel({ mixer }: { mixer: ReturnType<typeof useLaneMixe
         Audio mix
         {!ready && !error && <Spinner />}
         <span className="text-xs text-zinc-500">
-          {error ? `Lane preview unavailable: ${error}` : "Adjust each lane after the fact; the share copy uses this mix."}
+          {error
+            ? `Lane preview unavailable: ${error}`
+            : "Adjust each lane after the fact. Saved with the clip; share copies and \"Save mixed copy\" use it."}
         </span>
         <Button size="sm" variant="ghost" className="ml-auto" disabled={!changed} onClick={reset}>
           Reset

@@ -16,17 +16,19 @@ pub enum Action {
     TogglePause,
     ToggleReplay,
     SaveClip(String),
+    Bookmark,
 }
 
 impl Action {
     /// The fixed (non-preset) actions, in display order.
-    pub const FIXED: [&'static str; 3] = ["toggle_recording", "toggle_pause", "toggle_replay"];
+    pub const FIXED: [&'static str; 4] = ["toggle_recording", "toggle_pause", "toggle_replay", "bookmark"];
 
     pub fn parse(id: &str) -> Option<Self> {
         Some(match id {
             "toggle_recording" => Action::ToggleRecording,
             "toggle_pause" => Action::TogglePause,
             "toggle_replay" => Action::ToggleReplay,
+            "bookmark" => Action::Bookmark,
             _ => Action::SaveClip(id.strip_prefix(SAVE_CLIP_PREFIX)?.to_string()),
         })
     }
@@ -36,6 +38,7 @@ impl Action {
             Action::ToggleRecording => "toggle_recording".into(),
             Action::TogglePause => "toggle_pause".into(),
             Action::ToggleReplay => "toggle_replay".into(),
+            Action::Bookmark => "bookmark".into(),
             Action::SaveClip(p) => format!("{SAVE_CLIP_PREFIX}{p}"),
         }
     }
@@ -45,6 +48,7 @@ impl Action {
             Action::ToggleRecording => "Start / stop recording".into(),
             Action::TogglePause => "Pause / resume recording".into(),
             Action::ToggleReplay => "Start / stop replay buffer".into(),
+            Action::Bookmark => "Bookmark this moment".into(),
             Action::SaveClip(id) => {
                 let name = settings.clip_presets.iter().find(|p| &p.id == id).map_or(id.as_str(), |p| p.name.as_str());
                 format!("Save clip: {name}")
@@ -83,6 +87,7 @@ pub fn dispatch(app: &AppHandle, action: &Action, trigger: Trigger, at: Timestam
         Action::TogglePause => e.toggle_pause(),
         Action::ToggleReplay => e.toggle_replay(),
         Action::SaveClip(preset) => e.save_clip(preset),
+        Action::Bookmark => e.bookmark(),
     });
     let _ = app.emit("action", ActionEvent { action: action.id(), trigger, at_ms: at.as_millis(), detail });
 }
@@ -93,7 +98,7 @@ mod tests {
 
     #[test]
     fn ids_roundtrip() {
-        for id in ["toggle_recording", "toggle_pause", "toggle_replay", "save_clip:short"] {
+        for id in ["toggle_recording", "toggle_pause", "toggle_replay", "bookmark", "save_clip:short"] {
             assert_eq!(Action::parse(id).unwrap().id(), id);
         }
         assert_eq!(Action::parse("nope"), None);

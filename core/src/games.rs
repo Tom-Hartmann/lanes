@@ -36,23 +36,27 @@ const NOT_GAMES: &[&str] = &[
 
 /// Finds the game to capture: the foreground window if it is a known game or
 /// (with the heuristic) a fullscreen non-blacklisted app; otherwise any running known game.
-pub fn detect(known: &[KnownGame], fullscreen_heuristic: bool) -> Option<DetectedGame> {
+/// `ignored`: exes the user marked "not a game" (the heuristic skips them).
+pub fn detect(known: &[KnownGame], fullscreen_heuristic: bool, ignored: &[String]) -> Option<DetectedGame> {
     let fg = windows_list::foreground();
     let procs = windows_list::processes();
     // Only enumerate all windows when the cheap checks found nothing.
-    pick(known, fullscreen_heuristic, fg.as_ref(), &procs).or_else(|| {
-        fullscreen_heuristic.then(|| background_fullscreen(&windows_list::list())).flatten()
+    pick(known, fullscreen_heuristic, ignored, fg.as_ref(), &procs).or_else(|| {
+        fullscreen_heuristic.then(|| background_fullscreen(&windows_list::list(), ignored)).flatten()
     })
 }
 
-fn is_candidate(w: &WindowInfo) -> bool {
-    w.fullscreen && !w.exe.is_empty() && !NOT_GAMES.iter().any(|n| n.eq_ignore_ascii_case(&w.exe))
+fn is_candidate(w: &WindowInfo, ignored: &[String]) -> bool {
+    w.fullscreen
+        && !w.exe.is_empty()
+        && !NOT_GAMES.iter().any(|n| n.eq_ignore_ascii_case(&w.exe))
+        && !ignored.iter().any(|n| n.eq_ignore_ascii_case(&w.exe))
 }
 
 /// A borderless/fullscreen window that is not focused (e.g. a game on another
 /// monitor while you use a second screen).
-fn background_fullscreen(windows: &[WindowInfo]) -> Option<DetectedGame> {
-    windows.iter().find(|w| is_candidate(w)).map(|w| DetectedGame {
+fn background_fullscreen(windows: &[WindowInfo], ignored: &[String]) -> Option<DetectedGame> {
+    windows.iter().find(|w| is_candidate(w, ignored)).map(|w| DetectedGame {
         exe: w.exe.clone(),
         name: if w.title.is_empty() { w.exe.trim_end_matches(".exe").to_string() } else { w.title.clone() },
         pid: w.pid,
@@ -67,7 +71,7 @@ pub fn still_running(game: &DetectedGame) -> bool {
     windows_list::processes().iter().any(|p| p.pid == game.pid && p.exe.eq_ignore_ascii_case(&game.exe))
 }
 
-fn pick(known: &[KnownGame], heuristic: bool, fg: Option<&WindowInfo>, procs: &[ProcessEntry]) -> Option<DetectedGame> {
+fn pick(known: &[KnownGame], heuristic: bool, ignored: &[String], fg: Option<&WindowInfo>, procs: &[ProcessEntry]) -> Option<DetectedGame> {
     let lookup = |exe: &str| known.iter().find(|g| g.exe.eq_ignore_ascii_case(exe));
     if let Some(w) = fg {
         if let Some(g) = lookup(&w.exe) {
@@ -80,7 +84,7 @@ fn pick(known: &[KnownGame], heuristic: bool, fg: Option<&WindowInfo>, procs: &[
                 hwnd: Some(w.hwnd),
             });
         }
-        if heuristic && is_candidate(w) {
+        if heuristic && is_candidate(w, ignored) {
             return Some(DetectedGame {
                 exe: w.exe.clone(),
                 name: if w.title.is_empty() { w.exe.trim_end_matches(".exe").to_string() } else { w.title.clone() },
@@ -126,7 +130,7 @@ mod tests {
 
     #[test]
     fn known_foreground_game_wins() {
-        let g = pick(&known(), false, Some(&win("CS2.EXE", false)), &[]).unwrap();
+        let g = pick(&known(), false, &[], Some(&win("CS2.EXE", false)), &[]).unwrap();
         assert_eq!(g.name, "Counter-Strike 2");
         assert_eq!(g.profile_id.as_deref(), Some("fps"));
         assert_eq!(g.hwnd, Some(1));
@@ -134,23 +138,24 @@ mod tests {
 
     #[test]
     fn fullscreen_heuristic_skips_browsers_and_respects_toggle() {
-        assert!(pick(&known(), true, Some(&win("chrome.exe", true)), &[]).is_none());
-        assert!(pick(&known(), true, Some(&win("eldenring.exe", true)), &[]).is_some());
-        assert!(pick(&known(), false, Some(&win("eldenring.exe", true)), &[]).is_none());
-        assert!(pick(&known(), true, Some(&win("eldenring.exe", false)), &[]).is_none());
+        assert!(pick(&known(), true, &[], Some(&win("chrome.exe", true)), &[]).is_none());
+        assert!(pick(&known(), true, &[], Some(&win("eldenring.exe", true)), &[]).is_some());
+        assert!(pick(&known(), false, &[], Some(&win("eldenring.exe", true)), &[]).is_none());
+        assert!(pick(&known(), true, &[], Some(&win("eldenring.exe", false)), &[]).is_none());
+        assert!(pick(&known(), true, &["EldenRing.exe".into()], Some(&win("eldenring.exe", true)), &[]).is_none());
     }
 
     #[test]
     fn unfocused_fullscreen_window_is_found() {
         let windows = vec![win("Code.exe", false), win("firefox.exe", true), win("BNSR.exe", true)];
-        assert_eq!(background_fullscreen(&windows).unwrap().exe, "BNSR.exe");
-        assert!(background_fullscreen(&windows[..2]).is_none());
+        assert_eq!(background_fullscreen(&windows, &[]).unwrap().exe, "BNSR.exe");
+        assert!(background_fullscreen(&windows[..2], &[]).is_none());
     }
 
     #[test]
     fn background_known_game_is_found_in_process_list() {
         let procs = vec![ProcessEntry { pid: 7, parent_pid: 1, exe: "cs2.exe".into() }];
-        let g = pick(&known(), true, Some(&win("explorer.exe", false)), &procs).unwrap();
+        let g = pick(&known(), true, &[], Some(&win("explorer.exe", false)), &procs).unwrap();
         assert_eq!(g.pid, 7);
         assert_eq!(g.hwnd, None);
     }

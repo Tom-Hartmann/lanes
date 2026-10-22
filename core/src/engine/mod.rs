@@ -107,6 +107,11 @@ pub struct EngineStatus {
     pub game: Option<DetectedGame>,
     pub targets: Vec<String>,
     pub encoder: Option<String>,
+    /// Lane ids the running capture records (empty when idle).
+    pub session_lanes: Vec<String>,
+    /// Lane, video or encoder settings changed since the capture started;
+    /// they apply after a restart (`Control::apply_changes`).
+    pub pending_restart: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -134,6 +139,19 @@ pub struct ClipSaved {
     /// Preset id.
     pub preset: String,
     pub duration_secs: f64,
+    /// Bookmarks inside the clip, in seconds from its start.
+    pub markers: Vec<f64>,
+    /// Detected game when it was saved ("" for none).
+    pub game: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingSaved {
+    pub paths: Vec<PathBuf>,
+    /// Bookmarks in seconds from the start (pauses removed).
+    pub markers: Vec<f64>,
+    pub game: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -150,7 +168,9 @@ pub trait EventSink: Send + Sync + 'static {
     fn meters(&self, meters: &MeterFrame);
     fn stats(&self, stats: &Stats);
     fn clip_saved(&self, clip: &ClipSaved);
-    fn recording_saved(&self, paths: &[PathBuf]);
+    fn recording_saved(&self, rec: &RecordingSaved);
+    /// A bookmark was set (for feedback); `in_use`: a recording or the replay buffer is running.
+    fn bookmarked(&self, in_use: bool);
     fn error(&self, error: &EngineError);
 }
 
@@ -162,6 +182,8 @@ enum Command {
     StartReplay,
     StopReplay,
     SaveClip(String),
+    Bookmark,
+    ApplyChanges,
     SetGame(Option<DetectedGame>),
     Shutdown,
 }
@@ -182,6 +204,8 @@ impl Engine {
             game: None,
             targets: Vec::new(),
             encoder: None,
+            session_lanes: Vec::new(),
+            pending_restart: false,
         }));
         let (commands, rx) = unbounded();
         let shared = status.clone();
@@ -228,6 +252,15 @@ impl Engine {
     pub fn save_clip(&self, preset_id: &str) {
         let _ = self.commands.send(Command::SaveClip(preset_id.into()));
     }
+    /// Restarts the capture so lane/video/encoder changes take effect. The
+    /// replay buffer starts empty again; refused while recording.
+    pub fn apply_changes(&self) {
+        let _ = self.commands.send(Command::ApplyChanges);
+    }
+    /// Marks this moment; saved clips and recordings that contain it get a marker.
+    pub fn bookmark(&self) {
+        let _ = self.commands.send(Command::Bookmark);
+    }
     pub fn set_game(&self, game: Option<DetectedGame>) {
         let _ = self.commands.send(Command::SetGame(game));
     }
@@ -253,6 +286,10 @@ struct Session {
     /// The backend/codec actually used (after resolving Auto and fallbacks).
     encoder_choice: (crate::config::EncoderBackend, VideoCodec),
     _watcher: Option<DeviceWatcher>,
+    /// What the session was built with, to report settings that need a restart.
+    built_lanes: Vec<String>,
+    built_video: VideoSettings,
+    built_encoder: EncoderSettings,
     /// Stats deltas.
     last_frames: u64,
     last_encode_ns: u64,
@@ -265,6 +302,31 @@ struct RecordingInfo {
     paused_ms: i64,
     paused_since: Option<Instant>,
     files: Vec<PathBuf>,
+    /// On the shared clock, for bookmark offsets.
+    start: Timestamp,
+    pauses: Vec<(Timestamp, Option<Timestamp>)>,
+    game: String,
+}
+
+/// Bookmarks within `[start, end]` as seconds from `start`, skipping paused time.
+fn marker_offsets(marks: &[Timestamp], start: Timestamp, end: Timestamp, pauses: &[(Timestamp, Option<Timestamp>)]) -> Vec<f64> {
+    marks
+        .iter()
+        .filter(|t| t.0 >= start.0 && t.0 <= end.0)
+        .filter_map(|t| {
+            let mut paused = 0;
+            for &(a, b) in pauses {
+                let b = b.unwrap_or(end);
+                if t.0 >= a.0 && t.0 < b.0 {
+                    return None; // set while paused: not in the file
+                }
+                if b.0 <= t.0 {
+                    paused += b.0 - a.0;
+                }
+            }
+            Some((t.0 - start.0 - paused) as f64 / Timestamp::TICKS_PER_SEC as f64)
+        })
+        .collect()
 }
 
 enum Internal {
@@ -280,6 +342,8 @@ struct Control {
     recording: Option<RecordingInfo>,
     replay_on: bool,
     game: Option<DetectedGame>,
+    /// Recent bookmarks (pruned to what a clip or recording can contain).
+    bookmarks: Vec<Timestamp>,
     video_events: (Sender<VideoEvent>, Receiver<VideoEvent>),
     internal: (Sender<Internal>, Receiver<Internal>),
     cpu: CpuMeter,
@@ -302,6 +366,7 @@ impl Control {
             recording: None,
             replay_on: false,
             game: None,
+            bookmarks: Vec::new(),
             video_events: unbounded(),
             internal: unbounded(),
             cpu: CpuMeter::default(),
@@ -353,6 +418,15 @@ impl Control {
             Command::StartRecording => self.start_recording(),
             Command::StopRecording => self.stop_recording(),
             Command::TogglePause => self.toggle_pause(),
+            Command::Bookmark => self.bookmark(),
+            Command::ApplyChanges => {
+                if self.recording.is_some() {
+                    self.error(Component::Recorder, "stop the recording first; changes apply to the next one", true);
+                } else if self.session.is_some() {
+                    log::info!("restarting capture to apply changed settings");
+                    self.restart_session();
+                }
+            }
             Command::StartReplay => self.start_replay(),
             Command::StopReplay => self.stop_replay(),
             Command::SaveClip(preset) => self.save_clip(&preset),
@@ -494,6 +568,9 @@ impl Control {
             targets,
             encoder_label,
             _watcher: watcher,
+            built_lanes: self.config.audio.lanes.iter().map(|l| l.id.clone()).collect(),
+            built_video: self.config.video.clone(),
+            built_encoder: self.config.encoder.clone(),
             last_frames: 0,
             last_encode_ns: 0,
             last_recorded: 0,
@@ -649,6 +726,9 @@ impl Control {
                     paused_ms: 0,
                     paused_since: None,
                     files: files.into_iter().map(|f| f.path).collect(),
+                    start: Timestamp::now(),
+                    pauses: Vec::new(),
+                    game: self.game_name(),
                 });
             }
             Ok(Err(e)) => {
@@ -662,20 +742,36 @@ impl Control {
     fn stop_recording(&mut self) {
         let Some(info) = self.recording.take() else { return };
         let mut paths = info.files.clone();
+        let stop = Timestamp::now();
+        let markers = marker_offsets(&self.bookmarks, info.start, stop, &info.pauses);
         if let Some(s) = &self.session {
             let (reply, rx) = bounded(1);
-            let _ = s.router.commands.send(RouterCommand::StopRecording { at: Timestamp::now(), reply });
+            let _ = s.router.commands.send(RouterCommand::StopRecording { at: stop, reply });
             if let Ok(p) = rx.recv_timeout(Duration::from_secs(10)) {
                 paths = p;
             }
         }
         log::info!("recording stopped ({} file(s))", paths.len());
         self.maybe_end_session();
-        self.finish_files(paths);
+        self.finish_files(paths, markers, info.game);
+    }
+
+    fn bookmark(&mut self) {
+        let now = Timestamp::now();
+        // Keep what a clip or the running recording can still contain.
+        let keep_from = match &self.recording {
+            Some(r) => r.start.0,
+            None => now.0 - (i64::from(self.config.replay.length_secs) + 60) * Timestamp::TICKS_PER_SEC,
+        };
+        self.bookmarks.retain(|t| t.0 >= keep_from);
+        self.bookmarks.push(now);
+        let in_use = self.recording.is_some() || self.replay_on;
+        log::info!("bookmark set{}", if in_use { "" } else { " (nothing is recording)" });
+        self.sink.bookmarked(in_use);
     }
 
     /// Remuxes finished MKV recordings to MP4 in the background (if enabled).
-    fn finish_files(&self, paths: Vec<PathBuf>) {
+    fn finish_files(&self, paths: Vec<PathBuf>, markers: Vec<f64>, game: String) {
         let remux = self.config.output.remux_to_mp4;
         let sink = self.sink.clone();
         let _ = spawn("lanes-remux", Priority::Low, move || {
@@ -697,7 +793,7 @@ impl Control {
                     }
                 }
             }
-            sink.recording_saved(&out);
+            sink.recording_saved(&RecordingSaved { paths: out, markers, game });
         });
     }
 
@@ -707,11 +803,15 @@ impl Control {
         match info.paused_since.take() {
             Some(since) => {
                 info.paused_ms += since.elapsed().as_millis() as i64;
+                if let Some(p) = info.pauses.last_mut() {
+                    p.1 = Some(Timestamp::now());
+                }
                 let _ = s.router.commands.send(RouterCommand::Resume);
                 log::info!("recording resumed");
             }
             None => {
                 info.paused_since = Some(Instant::now());
+                info.pauses.push((Timestamp::now(), None));
                 let _ = s.router.commands.send(RouterCommand::Pause);
                 log::info!("recording paused");
             }
@@ -768,13 +868,23 @@ impl Control {
             (encoder.backend, encoder.codec) = s.encoder_choice;
         }
         let preset_id = preset.id.clone();
+        let marks = self.bookmarks.clone();
+        let game = self.game_name();
         let done: router::ClipDone = Box::new(move |result| match result {
             Ok((paths, duration)) => {
+                let start = Timestamp(now.0 - (duration * Timestamp::TICKS_PER_SEC as f64) as i64);
+                let markers = marker_offsets(&marks, start, now, &[]);
                 for p in &paths {
                     if quality != ClipQuality::Original {
                         reencode_clip(p, quality, &encoder);
                     }
-                    sink.clip_saved(&ClipSaved { path: p.to_string_lossy().into_owned(), preset: preset_id.clone(), duration_secs: duration });
+                    sink.clip_saved(&ClipSaved {
+                        path: p.to_string_lossy().into_owned(),
+                        preset: preset_id.clone(),
+                        duration_secs: duration,
+                        markers: markers.clone(),
+                        game: game.clone(),
+                    });
                 }
             }
             Err(e) => sink.error(&EngineError { source: "clip".into(), message: format!("saving the clip failed: {e}"), recoverable: true }),
@@ -982,6 +1092,12 @@ impl Control {
             game: self.game.clone().filter(|g| !g.exe.is_empty()),
             targets: self.session.as_ref().map(|s| s.targets.clone()).unwrap_or_default(),
             encoder: self.session.as_ref().map(|s| s.encoder_label.clone()),
+            session_lanes: self.session.as_ref().map(|s| s.built_lanes.clone()).unwrap_or_default(),
+            pending_restart: self.session.as_ref().is_some_and(|s| {
+                s.built_video != self.config.video
+                    || s.built_encoder != self.config.encoder
+                    || !s.built_lanes.iter().eq(self.config.audio.lanes.iter().map(|l| &l.id))
+            }),
         };
         *self.status.lock().unwrap_or_else(|e| e.into_inner()) = status.clone();
         self.sink.status(&status);
@@ -1078,6 +1194,24 @@ fn reencode_clip(path: &std::path::Path, quality: ClipQuality, enc: &EncoderSett
             log::error!("re-encoding {} failed: {e}; keeping the original quality", path.display());
             let _ = std::fs::remove_file(&tmp);
         }
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    const S: i64 = Timestamp::TICKS_PER_SEC;
+
+    #[test]
+    fn markers_are_relative_and_skip_pauses() {
+        let t = |s: i64| Timestamp(s * S);
+        let marks = [t(5), t(12), t(15), t(30), t(50)];
+        // Recording 10..40 s, paused 13..20 s.
+        let m = marker_offsets(&marks, t(10), t(40), &[(t(13), Some(t(20)))]);
+        assert_eq!(m, vec![2.0, 13.0]); // 12 s -> 2 s; 15 s is paused; 30 s -> 20 - 7 = 13 s
+        // Still paused at the end.
+        assert_eq!(marker_offsets(&marks, t(10), t(40), &[(t(14), None)]), vec![2.0]);
     }
 }
 

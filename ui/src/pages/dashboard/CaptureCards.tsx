@@ -103,6 +103,7 @@ export function ReplayCard() {
   const active = replay?.active ?? false;
   const fill = replay && replay.capacitySecs > 0 ? Math.min(1, replay.bufferedSecs / replay.capacitySecs) : 0;
   const capBytes = replaySettings?.storage === "ram" ? replaySettings.ramCapMb * 1024 * 1024 : null;
+  const bookmarkCombo = bindings.find((b) => b.action === "bookmark")?.combo;
 
   return (
     <Card
@@ -155,6 +156,16 @@ export function ReplayCard() {
           );
         })}
         {presets.length === 0 && <span className="text-xs text-zinc-500">No clip presets. Add one in Settings.</span>}
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ml-auto"
+          title="Mark this moment: clips and recordings that contain it show a marker on the timeline"
+          onClick={() => run("bookmark", "Could not set a bookmark", api.bookmark)}
+        >
+          ★ Bookmark
+          {bookmarkCombo && <span className="font-mono text-[10px] text-zinc-500">{bookmarkCombo}</span>}
+        </Button>
       </div>
     </Card>
   );
@@ -163,7 +174,22 @@ export function ReplayCard() {
 export function SessionCard() {
   const status = useStatusStore((s) => s.status);
   const profiles = useSettingsStore((s) => s.settings?.profiles);
+  const games = useSettingsStore((s) => s.settings?.games);
+  const update = useSettingsStore((s) => s.update);
   const profile = profiles?.find((p) => p.id === status?.activeProfile);
+  const game = status?.game;
+  // Only heuristic detections can be ignored; listed games are disabled in the list.
+  const guessed = game && !games?.some((g) => g.exe.toLowerCase() === game.exe.toLowerCase());
+  const ignore = (exe: string) =>
+    update((s) => ({
+      ...s,
+      gameDetection: {
+        ...s.gameDetection,
+        ignored: s.gameDetection.ignored.some((x) => x.toLowerCase() === exe.toLowerCase())
+          ? s.gameDetection.ignored
+          : [...s.gameDetection.ignored, exe],
+      },
+    }));
 
   return (
     <Card title="Session">
@@ -177,6 +203,16 @@ export function SessionCard() {
                 <span className="ml-2">
                   <Badge>Fullscreen</Badge>
                 </span>
+              )}
+              {guessed && (
+                <button
+                  type="button"
+                  onClick={() => ignore(status.game!.exe)}
+                  title="Never treat this program as a game (undo under Profiles → Game detection)"
+                  className="ml-2 text-xs text-zinc-500 underline-offset-2 hover:text-zinc-200 hover:underline"
+                >
+                  Not a game
+                </button>
               )}
             </>
           ) : (

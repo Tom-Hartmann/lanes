@@ -56,6 +56,7 @@ Every source on its own track, so you can edit them separately later.
 ### Games & profiles
 - Detects games from your list or because they run fullscreen
 - Per-game profiles switch automatically: capture, lanes, fps, buffer length
+- "Not a game" on the Dashboard stops a program from being taken for a game
 
 ### Multi-monitor
 - Monitor list with name, resolution, refresh rate and a preview
@@ -64,7 +65,9 @@ Every source on its own track, so you can edit them separately later.
 
 ### Clips library
 - Thumbnails, search and filters
-- Audio mix after the fact: volume, mute and solo for every lane while watching (no 3-source limit)
+- Bookmark hotkey (Ctrl+Shift+F7): marks show on the timeline; jump with B / N or trim around one in a click
+- Group and filter by game, sort by date, size or length
+- Audio mix after the fact: volume, mute and solo for every lane while watching (no 3-source limit), remembered per clip, saved as a mixed copy
 - Play with slow motion (down to 0.1x) and keyboard controls (? shows them), trim losslessly, convert to MP4
 - Share: one-click copy with your audio mix in one track and sized for Discord; drag it out, copy it (Ctrl+V in Discord) or send it to a Discord channel via webhook
 - Select several clips (or all) and delete them to the recycle bin, or show a file in its folder

@@ -99,7 +99,8 @@ export function AudioPage() {
 
       <Callout tone={recording ? "warn" : "info"}>
         {recording && <strong className="font-semibold">Recording in progress. </strong>}
-        Adding or removing lanes applies to the next recording. Volumes, mutes and assignments apply live.
+        Volumes, mutes, sources and assignments apply live. Added or removed lanes need a capture restart (a bar at the top
+        offers it), because each lane is a track in the file.
       </Callout>
       {!perAppSupported && (
         <Callout tone="warn">

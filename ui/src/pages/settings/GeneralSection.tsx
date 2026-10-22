@@ -51,6 +51,9 @@ export function GeneralSection({ settings }: { settings: Settings }) {
           />
         </Field>
       </div>
+      <Field label="Check for updates" hint="Asks GitHub for the latest release at startup and shows a link when there is a newer one.">
+        <Toggle checked={g.checkUpdates} onChange={(checkUpdates) => set({ checkUpdates })} />
+      </Field>
       <Field label="Clip saved sound" hint="A short chime. Pick another output than the one Lanes records to keep it out of your clips.">
         <div className="flex items-center gap-2">
           <Button size="sm" variant="ghost" onClick={() => void test("sound")}>

@@ -81,6 +81,14 @@ export function ClipCard({ clip, onOpen, selected, selecting, onToggle }: Props)
         <span className="absolute top-1.5 left-1.5">
           <Badge tone={clip.kind === "clip" ? "sky" : "neutral"}>{clip.kind === "clip" ? "Clip" : "Recording"}</Badge>
         </span>
+        {clip.markers.length > 0 && (
+          <span
+            className="absolute bottom-1.5 left-1.5 rounded bg-black/70 px-1 text-[11px] text-amber-300"
+            title={`${clip.markers.length} bookmark${clip.markers.length === 1 ? "" : "s"}`}
+          >
+            ★ {clip.markers.length}
+          </span>
+        )}
         {clip.durationSecs !== null && (
           <span className="absolute right-1.5 bottom-1.5 rounded bg-black/70 px-1 font-mono text-[11px] text-zinc-100">
             {formatDuration(clip.durationSecs)}
@@ -105,7 +113,10 @@ export function ClipCard({ clip, onOpen, selected, selecting, onToggle }: Props)
           {clip.fileName}
         </div>
         <div className="flex justify-between gap-2 text-[11px] text-zinc-500">
-          <span className="truncate">{formatDate(clip.createdMs)}</span>
+          <span className="truncate">
+            {clip.game && <span className="text-zinc-400">{clip.game} · </span>}
+            {formatDate(clip.createdMs)}
+          </span>
           <span className="shrink-0">{formatBytes(clip.sizeBytes)}</span>
         </div>
       </div>

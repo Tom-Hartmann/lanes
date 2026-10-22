@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IconFolder, IconRefresh, IconTrash } from "../../components/icons";
-import { Button, ConfirmButton, EmptyState, PageHeader, Segmented, Spinner, TextInput } from "../../components/ui";
+import { Button, ConfirmButton, cx, EmptyState, PageHeader, Segmented, Select, Spinner, TextInput } from "../../components/ui";
 import { formatBytes } from "../../lib/format";
 import { api, type ClipInfo } from "../../lib/ipc";
 import { attempt, notify, reportError } from "../../store/noticeStore";
@@ -9,12 +9,24 @@ import { ClipCard } from "./ClipCard";
 import { ClipViewer } from "./ClipViewer";
 
 type Filter = "all" | "clip" | "recording";
+type Sort = "newest" | "oldest" | "largest" | "longest" | "game";
+
+const SORTS: Record<Sort, (a: ClipInfo, b: ClipInfo) => number> = {
+  newest: (a, b) => b.createdMs - a.createdMs,
+  oldest: (a, b) => a.createdMs - b.createdMs,
+  largest: (a, b) => b.sizeBytes - a.sizeBytes,
+  longest: (a, b) => (b.durationSecs ?? 0) - (a.durationSecs ?? 0),
+  game: (a, b) => (a.game || "~").localeCompare(b.game || "~") || b.createdMs - a.createdMs,
+};
+const OTHER = "\u0000other";
 
 export function ClipsPage() {
   const [clips, setClips] = useState<ClipInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
+  const [game, setGame] = useState<string | null>(null);
+  const [sort, setSort] = useState<Sort>("newest");
   const [open, setOpen] = useState<ClipInfo | null>(null);
   const clipSeq = useStatusStore((s) => s.clipSeq);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -38,12 +50,24 @@ export function ClipsPage() {
   // On page open and whenever a clip is saved.
   useEffect(() => void load(), [load, clipSeq]);
 
+  // Games with clip counts, most clips first; files without a known game under "Other".
+  const games = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const c of clips ?? []) counts.set(c.game || OTHER, (counts.get(c.game || OTHER) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [clips]);
+
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return (clips ?? []).filter(
-      (c) => (filter === "all" || c.kind === filter) && (q === "" || c.fileName.toLowerCase().includes(q)),
-    );
-  }, [clips, filter, query]);
+    return (clips ?? [])
+      .filter(
+        (c) =>
+          (filter === "all" || c.kind === filter) &&
+          (game === null || (c.game || OTHER) === game) &&
+          (q === "" || c.fileName.toLowerCase().includes(q) || c.game.toLowerCase().includes(q)),
+      )
+      .sort(SORTS[sort]);
+  }, [clips, filter, query, game, sort]);
 
   const totalBytes = shown.reduce((n, c) => n + c.sizeBytes, 0);
   const closeViewer = useCallback(() => setOpen(null), []);
@@ -128,8 +152,36 @@ export function ClipsPage() {
             { value: "recording", label: "Recordings" },
           ]}
         />
-        <TextInput value={query} onChange={setQuery} placeholder="Search file names…" className="w-60 max-w-full" />
+        <TextInput value={query} onChange={setQuery} placeholder="Search names and games…" className="w-60 max-w-full" />
+        <Select<Sort>
+          value={sort}
+          onChange={setSort}
+          options={[
+            { value: "newest", label: "Newest first" },
+            { value: "oldest", label: "Oldest first" },
+            { value: "largest", label: "Largest first" },
+            { value: "longest", label: "Longest first" },
+            { value: "game", label: "By game" },
+          ]}
+        />
       </div>
+      {games.length > 1 && (
+        <div className="flex flex-wrap gap-1.5">
+          {[[null, clips?.length ?? 0] as const, ...games].map(([g, n]) => (
+            <button
+              key={g ?? "all"}
+              type="button"
+              onClick={() => setGame(g)}
+              className={cx(
+                "rounded-full border px-2.5 py-0.5 text-xs",
+                game === g ? "border-sky-500 bg-sky-500/15 text-sky-200" : "border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200",
+              )}
+            >
+              {g === null ? "All games" : g === OTHER ? "Other" : g} <span className="text-zinc-500">{n}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {picked.length > 0 && (
         <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-lg border border-sky-500/40 bg-zinc-900/95 px-3 py-2 text-sm backdrop-blur">

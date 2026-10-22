@@ -54,6 +54,18 @@ pub fn clip_saved(app: &AppHandle, settings: &Settings, clip: &ClipInfo<'_>) {
     }
 }
 
+/// Feedback for a bookmark: the clip sound and a short notice (same settings).
+pub fn bookmarked(settings: &Settings, in_use: bool, near: Option<isize>) {
+    let g = &settings.general;
+    if g.clip_sound {
+        sound(settings);
+    }
+    if g.clip_overlay {
+        let text = if in_use { "Bookmark set" } else { "Bookmark set (nothing is recording)" };
+        overlay::show(text.into(), g.clip_overlay_corner, near);
+    }
+}
+
 pub fn sound(settings: &Settings) {
     chime::play(settings.general.clip_sound_device.clone(), settings.general.clip_sound_volume);
 }

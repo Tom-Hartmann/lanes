@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use lanes_core::audio::mixer::MeterFrame;
 use lanes_core::config::{AudioLayout, CaptureMode, ClipPreset, ClipQuality, EncoderSettings, ReplaySettings, VideoSettings};
-use lanes_core::engine::{ClipSaved, Engine, EngineConfig, EngineError, EngineStatus, EventSink, OutputConfig, Stats};
+use lanes_core::engine::{ClipSaved, Engine, RecordingSaved, EngineConfig, EngineError, EngineStatus, EventSink, OutputConfig, Stats};
 
 #[derive(Default)]
 struct Collect {
@@ -31,9 +31,10 @@ impl EventSink for Collect {
     fn clip_saved(&self, c: &ClipSaved) {
         self.clips.lock().unwrap().push(c.clone());
     }
-    fn recording_saved(&self, paths: &[PathBuf]) {
-        self.recordings.lock().unwrap().extend_from_slice(paths);
+    fn recording_saved(&self, r: &RecordingSaved) {
+        self.recordings.lock().unwrap().extend_from_slice(&r.paths);
     }
+    fn bookmarked(&self, _: bool) {}
     fn error(&self, e: &EngineError) {
         eprintln!("engine error: {e:?}");
         self.errors.lock().unwrap().push(e.clone());
@@ -170,7 +171,7 @@ fn remux_file() {
 fn detect_game_now() {
     let fg = lanes_core::capture::windows_list::foreground();
     eprintln!("foreground: {:?}", fg.map(|w| (w.exe, w.fullscreen)));
-    eprintln!("detected: {:?}", lanes_core::games::detect(&[], true).map(|g| (g.name, g.exe, g.pid, g.fullscreen)));
+    eprintln!("detected: {:?}", lanes_core::games::detect(&[], true, &[]).map(|g| (g.name, g.exe, g.pid, g.fullscreen)));
 }
 
 #[test]

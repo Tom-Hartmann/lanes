@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lanes_core::audio::mixer::MeterFrame;
-use lanes_core::engine::{ClipSaved, DiskGuard, Engine, EngineConfig, EngineError, EngineStatus, EventSink, OutputConfig, Stats};
+use lanes_core::engine::{ClipSaved, DiskGuard, RecordingSaved, Engine, EngineConfig, EngineError, EngineStatus, EventSink, OutputConfig, Stats};
 use lanes_core::gpu::Gpu;
 use lanes_platform::admin;
 use serde::Serialize;
@@ -229,7 +229,7 @@ impl EventSink for TauriSink {
 
     fn clip_saved(&self, clip: &ClipSaved) {
         let state = self.app.state::<AppState>();
-        state.library.add(Path::new(&clip.path), Kind::Clip);
+        state.library.add_saved(Path::new(&clip.path), Kind::Clip, &clip.game, &clip.markers);
         let s = state.settings();
         log::info!("clip saved: {} ({:.1} s)", clip.path, clip.duration_secs);
         let _ = self.app.emit("clip_saved", clip);
@@ -247,13 +247,20 @@ impl EventSink for TauriSink {
         );
     }
 
-    fn recording_saved(&self, paths: &[PathBuf]) {
+    fn recording_saved(&self, rec: &RecordingSaved) {
         let state = self.app.state::<AppState>();
-        for p in paths {
-            state.library.add(p, Kind::Recording);
-            log::info!("recording saved: {}", p.display());
+        for p in &rec.paths {
+            state.library.add_saved(p, Kind::Recording, &rec.game, &rec.markers);
+            log::info!("recording saved: {} ({} bookmark(s))", p.display(), rec.markers.len());
         }
-        let _ = self.app.emit("recording_saved", paths);
+        let _ = self.app.emit("recording_saved", &rec.paths);
+    }
+
+    fn bookmarked(&self, in_use: bool) {
+        let state = self.app.state::<AppState>();
+        let near = state.status().and_then(|st| st.game).and_then(|g| g.hwnd);
+        crate::feedback::bookmarked(&state.settings(), in_use, near);
+        let _ = self.app.emit("bookmarked", in_use);
     }
 
     fn error(&self, error: &EngineError) {

@@ -94,6 +94,8 @@ pub struct General {
     pub autostart_delay_secs: u32,
     /// Run elevated via the scheduled task (see `lanes_platform::admin`).
     pub run_as_admin: bool,
+    /// Look for a newer release on GitHub (the UI asks the GitHub API).
+    pub check_updates: bool,
     pub clip_sound: bool,
     /// Output device for the clip sound; `None` = Windows default output.
     pub clip_sound_device: Option<String>,
@@ -126,6 +128,7 @@ impl Default for General {
             autostart_profile: None,
             autostart_delay_secs: 10,
             run_as_admin: false,
+            check_updates: true,
             clip_sound: true,
             clip_sound_device: None,
             clip_sound_volume: 70,
@@ -174,7 +177,7 @@ impl Default for Output {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HotkeySetting {
-    /// Action id: `toggle_recording`, `toggle_pause`, `toggle_replay` or `save_clip:<preset id>`.
+    /// Action id: `toggle_recording`, `toggle_pause`, `toggle_replay`, `bookmark` or `save_clip:<preset id>`.
     pub action: String,
     pub combo: Option<Combo>,
     #[serde(default)]
@@ -215,11 +218,13 @@ pub struct GameDetection {
     /// Also treat unknown fullscreen applications as games.
     pub fullscreen_heuristic: bool,
     pub auto_switch_profile: bool,
+    /// Exes the fullscreen heuristic must not treat as games ("Not a game").
+    pub ignored: Vec<String>,
 }
 
 impl Default for GameDetection {
     fn default() -> Self {
-        Self { enabled: true, fullscreen_heuristic: true, auto_switch_profile: true }
+        Self { enabled: true, fullscreen_heuristic: true, auto_switch_profile: true, ignored: Vec::new() }
     }
 }
 
@@ -257,6 +262,7 @@ impl Default for Settings {
                 hotkey("toggle_replay", "Ctrl+Shift+F11"),
                 hotkey("save_clip:short", "Ctrl+Shift+F10"),
                 hotkey("save_clip:long", "Ctrl+Shift+F12"),
+                hotkey("bookmark", "Ctrl+Shift+F7"),
             ],
             profiles: vec![Profile {
                 id: "default".into(),

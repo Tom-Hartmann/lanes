@@ -108,7 +108,7 @@ export type HotkeyBackend = "auto" | "hook";
 export type HotkeyMode = "registered" | "hook";
 
 export interface HotkeySetting {
-  /** "toggle_recording" | "toggle_pause" | "toggle_replay" | `save_clip:${presetId}` */
+  /** "toggle_recording" | "toggle_pause" | "toggle_replay" | "bookmark" | `save_clip:${presetId}` */
   action: string;
   combo: string | null;
   backend: HotkeyBackend;
@@ -140,6 +140,8 @@ export interface Settings {
     autostartProfile: Id | null;
     autostartDelaySecs: number;
     runAsAdmin: boolean;
+    /** Look for a newer release on GitHub. */
+    checkUpdates: boolean;
     clipSound: boolean;
     /** Output device id; null = Windows default output. */
     clipSoundDevice: string | null;
@@ -172,6 +174,8 @@ export interface Settings {
     enabled: boolean;
     fullscreenHeuristic: boolean;
     autoSwitchProfile: boolean;
+    /** Exes marked "Not a game"; the fullscreen heuristic skips them. */
+    ignored: string[];
   };
   viewer: {
     /** Action id -> keys (KeyboardEvent.key); missing actions use the defaults. */
@@ -233,6 +237,10 @@ export interface EngineStatus {
   targets: string[];
   /** e.g. "NVENC · H.264", null when idle. */
   encoder: string | null;
+  /** Lane ids the running capture records (empty when idle). */
+  sessionLanes: Id[];
+  /** Lane/video/encoder settings changed since the capture started. */
+  pendingRestart: boolean;
 }
 
 export interface BindingInfo {
@@ -302,6 +310,12 @@ export interface ClipInfo {
   createdMs: number;
   durationSecs: number | null;
   kind: "clip" | "recording";
+  /** "" when unknown, "Desktop" when no game was running. */
+  game: string;
+  /** Bookmarks, seconds from the start. */
+  markers: number[];
+  /** The viewer's saved audio mix (see LaneMixer), if any. */
+  mix: unknown;
 }
 
 // -------------------------------------------------------------------- events
@@ -349,6 +363,8 @@ export interface ClipSaved {
   path: string;
   preset: string;
   durationSecs: number;
+  markers: number[];
+  game: string;
 }
 
 export interface EngineError {
@@ -382,6 +398,10 @@ export const api = {
   startReplay: () => invoke<void>("start_replay"),
   stopReplay: () => invoke<void>("stop_replay"),
   saveClip: (presetId: Id) => invoke<void>("save_clip", { presetId }),
+  /** Marks this moment in the replay buffer / recording. */
+  bookmark: () => invoke<void>("bookmark"),
+  /** Restarts the capture so pending lane/video/encoder changes apply. */
+  applyCaptureChanges: () => invoke<void>("apply_capture_changes"),
 
   listMonitors: () => invoke<MonitorInfo[]>("list_monitors"),
   /** PNG/BMP data URL, ~320 px wide. Only call while the page is visible. */
@@ -412,6 +432,8 @@ export const api = {
     invoke<ShareResult>("share_clip", { path, tracks, gainsDb, maxMb }),
   /** Each audio track as its own cached file, for the viewer's lane mixer. */
   clipAudioPreview: (path: string) => invoke<string[]>("clip_audio_preview", { path }),
+  setClipMix: (path: string, mix: unknown) => invoke<void>("set_clip_mix", { path, mix }),
+  openReleasesPage: () => invoke<void>("open_releases_page"),
   /** Clip on the clipboard as a file (Ctrl+V in Discord uploads it). */
   copyClipFile: (path: string) => invoke<void>("copy_clip_file", { path }),
   /** Native drag of the file; call while the mouse button is held. */
@@ -437,6 +459,8 @@ export const events = {
   onClipSaved: on<ClipSaved>("clip_saved"),
   /** A recording finished (after the optional MP4 remux); payload = file paths. */
   onRecordingSaved: on<string[]>("recording_saved"),
+  /** A bookmark was set; payload: whether a recording or the replay buffer runs. */
+  onBookmarked: on<boolean>("bookmarked"),
   onError: on<EngineError>("engine_error"),
   onSettings: on<Settings>("settings"),
   onHotkeys: on<BindingInfo[]>("hotkeys"),
@@ -450,6 +474,7 @@ export const HOTKEY_ACTIONS = {
   toggleRecording: "toggle_recording",
   togglePause: "toggle_pause",
   toggleReplay: "toggle_replay",
+  bookmark: "bookmark",
 } as const;
 
 export const SAVE_CLIP_PREFIX = "save_clip:";
