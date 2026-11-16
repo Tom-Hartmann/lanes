@@ -74,6 +74,7 @@ impl Payload {
 /// and no pending clip still references it.
 struct Segment {
     path: PathBuf,
+    _directory: Arc<crate::files::WorkDir>,
 }
 
 impl Drop for Segment {
@@ -83,31 +84,34 @@ impl Drop for Segment {
 }
 
 struct DiskWriter {
-    dir: PathBuf,
+    dir: Arc<crate::files::WorkDir>,
     current: Option<(Arc<Segment>, File, u64)>,
     next_id: u64,
 }
 
+impl Drop for DiskWriter {
+    fn drop(&mut self) {
+        if let Some((segment, file, _)) = self.current.take() {
+            drop(file);
+            drop(segment);
+        }
+    }
+}
+
 impl DiskWriter {
     fn new(dir: PathBuf) -> Result<Self> {
-        fs::create_dir_all(&dir)?;
-        // Leftovers from a previous run.
-        if let Ok(entries) = fs::read_dir(&dir) {
-            for e in entries.flatten() {
-                if e.file_name().to_string_lossy().starts_with("segment-") {
-                    let _ = fs::remove_file(e.path());
-                }
-            }
-        }
+        // Snapshots may outlive the buffer. Never reuse or sweep another
+        // session's files; the last segment reference owns directory cleanup.
+        let dir = Arc::new(crate::files::WorkDir::new(&dir)?);
         Ok(Self { dir, current: None, next_id: 0 })
     }
 
     fn write(&mut self, data: &[u8]) -> Result<(Arc<Segment>, u64)> {
         if self.current.as_ref().is_none_or(|(_, _, len)| *len >= SEGMENT_BYTES) {
-            let path = self.dir.join(format!("segment-{:06}.bin", self.next_id));
+            let path = self.dir.path().join(format!("segment-{:06}.bin", self.next_id));
             self.next_id += 1;
             let file = OpenOptions::new().create(true).truncate(true).write(true).open(&path)?;
-            self.current = Some((Arc::new(Segment { path }), file, 0));
+            self.current = Some((Arc::new(Segment { path, _directory: self.dir.clone() }), file, 0));
         }
         let (seg, file, len) = self.current.as_mut().expect("just created");
         file.write_all(data)?;
@@ -159,6 +163,9 @@ pub struct ReplayBuffer {
 }
 
 impl ReplayBuffer {
+    pub fn storage(&self) -> ReplayStorage {
+        if self.disk.is_some() { ReplayStorage::Disk } else { ReplayStorage::Ram }
+    }
     pub fn new(limits: ReplayLimits, storage: ReplayStorage, disk_dir: &Path) -> Result<Self> {
         let disk = match storage {
             ReplayStorage::Ram => None,
@@ -492,5 +499,22 @@ mod tests {
         drop(buf);
         assert!(fs::read_dir(&dir).unwrap().next().is_none(), "segments removed");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn disk_snapshot_survives_buffer_restart() {
+        let root = crate::files::WorkDir::new(&std::env::temp_dir()).unwrap();
+        let limits = ReplayLimits { duration: Duration::from_secs(10), max_bytes: usize::MAX };
+        let mut old = ReplayBuffer::new(limits.clone(), ReplayStorage::Disk, root.path()).unwrap();
+        old.push(pkt(StreamId::Video(0), 0, true, 0, 25)).unwrap();
+        let (_, snapshot) = old.snapshot(Timestamp(1), Duration::from_secs(1), &[PRIMARY]).unwrap();
+        drop(old);
+        let mut new = ReplayBuffer::new(limits, ReplayStorage::Disk, root.path()).unwrap();
+        new.push(pkt(StreamId::Video(0), 0, true, 0, 99)).unwrap();
+        assert_eq!(snapshot[0].load().unwrap().data.len(), 25);
+        drop(snapshot);
+        assert_eq!(new.snapshot(Timestamp(1), Duration::from_secs(1), &[PRIMARY]).unwrap().1[0].load().unwrap().data.len(), 99);
+        drop(new);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
     }
 }

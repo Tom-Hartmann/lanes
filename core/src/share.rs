@@ -5,12 +5,17 @@
 //! with the lanes kept.
 
 use std::path::Path;
+#[cfg(test)]
 use std::ptr;
 
-use crate::av::{self, CodecContext, CodecParams, Frame, Packet, ffi};
-use crate::config::{EncoderBackend, MIX_STREAM, MIX_TRACK_TITLE, VideoCodec};
-use crate::error::{Error, Result, av_check};
-use crate::media::{Input, decode_video, open_decoder, to_nv12};
+#[cfg(test)]
+use crate::av::{self, CodecContext, Frame, Packet, ffi};
+use crate::config::{EncoderBackend, MIX_TRACK_TITLE, VideoCodec};
+use crate::error::{Error, Result};
+#[cfg(test)]
+use crate::error::av_check;
+#[cfg(test)]
+use crate::media::Input;
 
 /// The clip viewer's audio mix: which lanes to hear and how loud.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
@@ -46,284 +51,117 @@ pub struct ShareResult {
 
 const AUDIO_KBPS: u32 = 160;
 
-/// Writes the share copy of `src` to `dst` (MP4).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OriginalAudio { Discard, Copy, Encode }
+
+/// Adds a bounded streaming audio mix. Original lanes can be retained behind it.
+pub(crate) fn audio_args(cmd: &mut std::process::Command, src: &Path, spec: Option<&MixSpec>, originals: OriginalAudio) -> Result<()> {
+    let keep_lanes = originals != OriginalAudio::Discard;
+    let titles = crate::media::audio_track_titles(src)?;
+    let Some(spec) = spec else {
+        cmd.args(["-map", "0:a?", "-c:a", "aac", "-b:a", "160k", "-ar", "48000"]);
+        return Ok(());
+    };
+    if titles.is_empty() { return Ok(()); }
+    let mixed = (titles.len() > 1).then(|| titles.iter().position(|t| t == MIX_TRACK_TITLE)).flatten();
+    let selected = spec.tracks.clone().unwrap_or_else(|| (0..titles.len()).collect());
+    if selected.iter().any(|&k| k >= titles.len()) { return Err(Error::Invalid("Unknown audio lane".into())); }
+    let mut chosen: Vec<_> = selected.into_iter().filter(|k| Some(*k) != mixed).collect();
+    chosen.sort_unstable(); chosen.dedup();
+    if chosen.is_empty() { return Err(Error::Invalid("every lane is muted in the audio mix".into())); }
+    let mut graph = Vec::new();
+    for &k in &chosen {
+        let db = spec.gains_db.get(k).copied().unwrap_or(0.0);
+        if !db.is_finite() || !(-96.0..=24.0).contains(&db) { return Err(Error::Invalid("Audio gain must be between -96 and +24 dB".into())); }
+        graph.push(format!("[0:a:{k}]aresample=48000,aformat=channel_layouts=stereo,volume={db}dB[a{k}]"));
+    }
+    let inputs: String = chosen.iter().map(|k| format!("[a{k}]")).collect();
+    graph.push(format!("{inputs}amix=inputs={}:normalize=0:duration=longest,alimiter=limit=1:level=false:latency=true[mix]", chosen.len()));
+    cmd.arg("-filter_complex").arg(graph.join(";")).args(["-map", "[mix]", "-c:a", "aac", "-b:a", "160k", "-ar", "48000"]);
+    cmd.args(["-metadata:s:a:0", &format!("title={}", if keep_lanes { MIX_TRACK_TITLE } else { "Mix" }), "-metadata:s:a:0", &format!("handler_name={}", if keep_lanes { MIX_TRACK_TITLE } else { "Mix" }), "-disposition:a:0", "default"]);
+    if keep_lanes {
+        for (out, (k, title)) in (1..).zip(titles.iter().enumerate().filter(|(k, _)| Some(*k) != mixed)) {
+            cmd.args(["-map", &format!("0:a:{k}"), &format!("-metadata:s:a:{out}"), &format!("title={title}"), &format!("-metadata:s:a:{out}"), &format!("handler_name={title}"), &format!("-disposition:a:{out}"), "0"]);
+            if originals == OriginalAudio::Copy { cmd.args([&format!("-c:a:{out}"), "copy"]); }
+        }
+    }
+    Ok(())
+}
+
+/// Export uses streaming FFmpeg decoding/muxing; memory does not scale with duration.
 pub fn export(src: &Path, dst: &Path, opts: &ShareOptions) -> Result<ShareResult> {
     if let Some((start, end)) = opts.range {
-        let cut = temp_cut_path(dst);
+        let work = crate::files::WorkDir::new(dst.parent().unwrap_or(Path::new(".")))?;
+        let cut = work.path().join("cut.mkv");
         crate::media::trim(src, &cut, start, end)?;
-        let result = export(&cut, dst, &ShareOptions { range: None, ..opts.clone() });
-        let _ = std::fs::remove_file(&cut);
-        return result;
+        return export(&cut, dst, &ShareOptions { range: None, ..opts.clone() });
     }
-    let input = Input::open(src)?;
-    let v = input.video_stream().ok_or_else(|| Error::Unsupported("no video stream".into()))?;
-    // SAFETY: valid context.
-    let duration = (unsafe { (*input.0).duration } as f64 / f64::from(ffi::AV_TIME_BASE)).max(0.5);
-    drop(input);
-
-    // Audio: decode the chosen lanes, mix, encode one AAC track.
-    let (streams, mix_track) = audio_layout(src)?;
-    let chosen = chosen_lanes(&streams, mix_track, &opts.mix);
-    let audio = if chosen.is_empty() {
-        None
-    } else {
-        Some(encode_mix(src, &chosen, &opts.mix.gains_db, av::StreamId::Audio(0), "Mix")?)
-    };
-
-    // Video: copy if the file already fits, otherwise re-encode to fit.
-    let src_bytes = std::fs::metadata(src).map(|m| m.len()).unwrap_or(u64::MAX);
-    let video_kbps = opts.max_bytes.filter(|&max| src_bytes > max).map(|max| target_video_kbps(max, duration));
-
-    let tmp = dst.with_extension("partial");
-    let written = (|| -> Result<bool> {
-        let (video_info, video_packets, reencoded) = match video_kbps {
-            None => {
-                let (info, packets) = copy_video(src, v)?;
-                (info, packets, false)
+    let duration = crate::media::duration(src).filter(|d| d.is_finite() && *d > 0.0).ok_or_else(|| Error::Invalid("Cannot determine clip duration".into()))?;
+    let work = crate::files::WorkDir::new(dst.parent().unwrap_or(Path::new(".")))?;
+    let tmp = work.path().join("share.mp4");
+    let size = std::fs::metadata(src)?.len();
+    let mut kbps = opts.max_bytes.filter(|&max| size > max).map(|max| target_video_kbps(max, duration));
+    for _ in 0..3 {
+        if kbps.is_some_and(|k| k < 300) { return Err(Error::Invalid("This clip is too long for the selected size. Shorten it or choose a larger limit.".into())); }
+        let render = |backend| -> Result<()> {
+            let mut cmd = crate::ffmpeg::command()?;
+            cmd.arg("-i").arg(src).args(["-map", "0:v:0"]);
+            audio_args(&mut cmd, src, Some(&opts.mix), OriginalAudio::Discard)?;
+            match kbps {
+                None => { cmd.args(["-c:v", "copy"]); }
+                Some(rate) => {
+                    let name = crate::encode::encoder_name(backend, VideoCodec::H264).unwrap_or("libx264");
+                    cmd.args(["-c:v", name, "-b:v", &format!("{rate}k"), "-maxrate", &format!("{rate}k"), "-bufsize", &format!("{}k", rate * 2), "-pix_fmt", "yuv420p", "-threads", "2"]);
+                    if name == "libx264" { cmd.args(["-preset", "fast"]); }
+                }
             }
-            Some(kbps) => {
-                let (info, packets) = reencode_video(src, v, opts.backend, kbps)?;
-                (info, packets, true)
-            }
+            cmd.args(["-movflags", "+faststart"]).arg(&tmp);
+            crate::ffmpeg::run(cmd, None, duration)
         };
-        let mut infos = vec![video_info.clone()];
-        if let Some((info, _)) = &audio {
-            infos.push(info.clone());
+        if let Err(e) = render(opts.backend) {
+            if kbps.is_none() || opts.backend == EncoderBackend::X264 { return Err(e); }
+            log::warn!("hardware export unavailable: {e}; retrying with x264");
+            render(EncoderBackend::X264)?;
         }
-        let mut mux = crate::mux::Muxer::create(&tmp, crate::mux::Container::Mp4, &infos)?;
-        // Interleave by time so the MP4 muxer does not buffer everything.
-        let secs = |p: &av::EncodedPacket, tb: ffi::AVRational| p.dts as f64 * f64::from(tb.num) / f64::from(tb.den);
-        let mut all: Vec<(f64, &av::EncodedPacket)> = video_packets.iter().map(|p| (secs(p, video_info.time_base), p)).collect();
-        if let Some((info, packets)) = &audio {
-            all.extend(packets.iter().map(|p| (secs(p, info.time_base), p)));
+        let size_bytes = std::fs::metadata(&tmp)?.len();
+        if opts.max_bytes.is_none_or(|max| size_bytes <= max) {
+            std::fs::rename(&tmp, dst)?;
+            return Ok(ShareResult { path: dst.to_string_lossy().into_owned(), size_bytes, reencoded: kbps.is_some() });
         }
-        all.sort_by(|a, b| a.0.total_cmp(&b.0));
-        for (_, p) in all {
-            mux.write(p, 0)?;
-        }
-        mux.finish()?;
-        Ok(reencoded)
-    })();
-    let reencoded = match written {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e);
-        }
-    };
-    std::fs::rename(&tmp, dst)?;
-    let size_bytes = std::fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
-    Ok(ShareResult { path: dst.to_string_lossy().into_owned(), size_bytes, reencoded })
-}
-
-/// An edited copy for the library: the part `range` (lossless cut, the start
-/// snaps back to a keyframe) and, with `mix`, a new first track
-/// "Mix (all lanes)" rendered from the lanes at these volumes. Video and the
-/// separate lanes are copied unchanged (a previous mixed track is replaced),
-/// so the copy can be remixed later. Players and Discord play the new mix.
-pub fn edited_copy(src: &Path, dst: &Path, range: Option<(f64, f64)>, mix: Option<&MixSpec>) -> Result<()> {
-    let Some(spec) = mix else {
-        return match range {
-            Some((start, end)) => crate::media::trim(src, dst, start, end),
-            None => crate::media::remux(src, dst),
-        };
-    };
-    let Some((start, end)) = range else { return remix(src, dst, spec) };
-    // Cut first, then remix the cut, so only the kept part is decoded.
-    let cut = temp_cut_path(dst);
-    crate::media::trim(src, &cut, start, end)?;
-    let result = remix(&cut, dst, spec);
-    let _ = std::fs::remove_file(&cut);
-    result
-}
-
-/// A temporary file for a cut, in the system temp folder (not the clips
-/// folder, where the library would list it), with `dst`'s container.
-fn temp_cut_path(dst: &Path) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    let ext = dst.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
-    std::env::temp_dir().join(format!("lanes-cut-{}-{nanos}.{ext}", std::process::id()))
-}
-
-/// Copies `src` with a newly rendered mixed track first (see `edited_copy`).
-fn remix(src: &Path, dst: &Path, spec: &MixSpec) -> Result<()> {
-    let (streams, mix_track) = audio_layout(src)?;
-    let chosen = chosen_lanes(&streams, mix_track, spec);
-    if chosen.is_empty() {
-        return Err(Error::Invalid("every lane is muted in the audio mix".into()));
-    }
-    let (info, packets) = encode_mix(src, &chosen, &spec.gains_db, av::StreamId::Audio(MIX_STREAM), MIX_TRACK_TITLE)?;
-    crate::media::copy_streams(
-        src,
-        dst,
-        &crate::media::CopyOptions {
-            skip: mix_track.map(|k| streams[k]),
-            first_audio: Some((&info, &packets)),
-            ..Default::default()
-        },
-    )
-}
-
-/// The file's audio streams (input indexes) and which of them, if any, is a
-/// Lanes mixed track.
-fn audio_layout(src: &Path) -> Result<(Vec<usize>, Option<usize>)> {
-    let input = Input::open(src)?;
-    let streams: Vec<usize> = input
-        .streams()
-        .iter()
-        .enumerate()
-        // SAFETY: valid streams of the open input.
-        .filter(|(_, st)| unsafe { (*(***st).codecpar).codec_type == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO })
-        .map(|(i, _)| i)
-        .collect();
-    drop(input);
-    let titles = crate::media::audio_track_titles(src).unwrap_or_default();
-    let mix = if streams.len() > 1 { titles.iter().position(|t| t == MIX_TRACK_TITLE) } else { None };
-    Ok((streams, mix))
-}
-
-/// (track, stream index) pairs to mix: the chosen lanes, never the mixed
-/// track (it already contains them).
-fn chosen_lanes(streams: &[usize], mix_track: Option<usize>, spec: &MixSpec) -> Vec<(usize, usize)> {
-    match &spec.tracks {
-        None => streams.iter().copied().enumerate().filter(|&(k, _)| Some(k) != mix_track).collect(),
-        Some(sel) => sel.iter().filter(|&&k| Some(k) != mix_track).filter_map(|&k| streams.get(k).map(|&i| (k, i))).collect(),
-    }
-}
-
-/// Decodes the `chosen` tracks, mixes them at `gains_db` and encodes one AAC
-/// track, timed from the file start.
-fn encode_mix(src: &Path, chosen: &[(usize, usize)], gains_db: &[f32], id: av::StreamId, title: &str) -> Result<(av::StreamInfo, Vec<av::EncodedPacket>)> {
-    let mut mix: Vec<f32> = Vec::new();
-    for &(k, idx) in chosen {
-        let gain = crate::audio::dsp::gain_for(gains_db.get(k).copied().unwrap_or(0.0), false);
-        decode_audio_into(src, idx, gain, &mut mix)?;
-    }
-    crate::audio::dsp::soft_clip(&mut mix);
-    let mut enc = crate::encode::audio::AudioEncoder::open(crate::config::AudioCodec::Aac, AUDIO_KBPS)?;
-    let mut out = Vec::new();
-    for block in mix.chunks(4800) {
-        enc.push(block, &mut out)?;
-    }
-    enc.flush(&mut out)?;
-    let tb = enc.context().time_base();
-    let packets = out.iter().map(|p| av::EncodedPacket::from_av(id, p, tb, crate::Timestamp(0))).filter(|p| p.pts >= 0).collect();
-    let info = av::StreamInfo { id, params: std::sync::Arc::new(enc.context().parameters()?), time_base: tb, title: title.into() };
-    Ok((info, packets))
-}
-
-/// Video bitrate that makes a `duration`-second file fit `max_bytes`
-/// alongside the audio track (4 % reserved for container overhead).
-pub fn target_video_kbps(max_bytes: u64, duration: f64) -> u32 {
-    let budget = (max_bytes as f64 * 0.96) as u64;
-    let audio_bytes = (f64::from(AUDIO_KBPS) * 125.0 * duration) as u64;
-    let video_bits = budget.saturating_sub(audio_bytes) as f64 * 8.0;
-    ((video_bits / duration.max(0.5)) / 1000.0).clamp(300.0, 50_000.0) as u32
-}
-
-/// The video stream's packets unchanged, starting at the first keyframe.
-fn copy_video(src: &Path, v: usize) -> Result<(av::StreamInfo, Vec<av::EncodedPacket>)> {
-    let input = Input::open(src)?;
-    let st = input.streams()[v];
-    // SAFETY: valid stream; parameters are deep-copied.
-    let (params, tb) = unsafe { (CodecParams::from_raw_copy((*st).codecpar)?, (*st).time_base) };
-    let info = av::StreamInfo { id: av::StreamId::Video(0), params: std::sync::Arc::new(params), time_base: tb, title: String::new() };
-    let mut out: Vec<av::EncodedPacket> = Vec::new();
-    let mut pkt = Packet::alloc()?;
-    let mut last_dts: Option<i64> = None;
-    while input.read(&mut pkt)?.is_some() {
-        let raw = pkt.raw();
-        if raw.stream_index as usize != v {
-            continue;
-        }
-        let keyframe = raw.flags & ffi::AV_PKT_FLAG_KEY != 0;
-        if out.is_empty() && !keyframe {
-            continue;
-        }
-        let pts = if raw.pts == ffi::AV_NOPTS_VALUE { raw.dts } else { raw.pts };
-        let mut dts = if raw.dts == ffi::AV_NOPTS_VALUE { pts } else { raw.dts };
-        if let Some(prev) = last_dts.filter(|&p| dts <= p) {
-            dts = prev + 1;
-        }
-        last_dts = Some(dts);
-        out.push(av::EncodedPacket {
-            stream: av::StreamId::Video(0),
-            data: pkt.data().into(),
-            pts: pts.max(dts),
-            dts,
-            duration: raw.duration,
-            keyframe,
-            time: crate::Timestamp(0),
+        let max = opts.max_bytes.expect("checked limit");
+        kbps = Some(match kbps {
+            None => target_video_kbps(max, duration),
+            Some(rate) => (f64::from(rate) * max as f64 / size_bytes as f64 * 0.85) as u32,
         });
     }
-    Ok((info, out))
+    Err(Error::Invalid("The export could not fit the selected size. Choose a larger limit or shorten the selection.".into()))
 }
 
-/// Re-encodes the video stream to H.264 at `kbps` (hardware encoder, x264 fallback).
-fn reencode_video(src: &Path, v: usize, backend: EncoderBackend, kbps: u32) -> Result<(av::StreamInfo, Vec<av::EncodedPacket>)> {
-    let input = Input::open(src)?;
-    let dec = open_decoder(&input, v)?;
-    // SAFETY: valid decoder context and stream.
-    let (w, h, fr) = unsafe { ((*dec.0).width, (*dec.0).height, (*input.streams()[v]).avg_frame_rate) };
-    let fps = if fr.num > 0 && fr.den > 0 { (fr.num / fr.den).max(1) } else { 60 };
-    let open = |name: &str| -> Result<CodecContext> {
-        let enc = CodecContext::encoder(name)?;
-        // SAFETY: not yet opened; plain field setup.
-        unsafe {
-            let c = &mut *enc.0;
-            c.width = w;
-            c.height = h;
-            c.time_base = av::rational(1, fps);
-            c.framerate = av::rational(fps, 1);
-            c.pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
-            c.gop_size = fps * 2;
-            c.max_b_frames = 0;
-            c.bit_rate = i64::from(kbps) * 1000;
-            c.rc_max_rate = c.bit_rate;
-            c.rc_buffer_size = (c.bit_rate * 2) as i32;
-            c.color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
-            c.color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
-            c.colorspace = ffi::AVColorSpace::AVCOL_SPC_BT709;
-            c.color_range = ffi::AVColorRange::AVCOL_RANGE_MPEG;
-            c.flags |= ffi::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
-        }
-        // A size target needs a hard rate cap.
-        enc.set_opt("rc", "cbr");
-        enc.open()?;
-        Ok(enc)
+/// Existing lossless trim path; mix rendering is streamed through the worker.
+pub fn edited_copy(src: &Path, dst: &Path, range: Option<(f64, f64)>, mix: Option<&MixSpec>) -> Result<()> {
+    let Some(spec) = mix else {
+        return match range { Some((a, b)) => crate::media::trim(src, dst, a, b), None => crate::media::remux(src, dst) };
     };
-    let name = crate::encode::encoder_name(backend, VideoCodec::H264).unwrap_or("libx264");
-    let enc = match open(name) {
-        Ok(e) => e,
-        Err(e) if name != "libx264" => {
-            log::warn!("{name} unavailable for the share copy ({e}); using x264");
-            open("libx264")?
-        }
-        Err(e) => return Err(e),
-    };
-    log::info!("share copy: re-encoding {} with {name} at {kbps} kbps", src.display());
-    let tb = enc.time_base();
-    let info = av::StreamInfo { id: av::StreamId::Video(0), params: std::sync::Arc::new(enc.parameters()?), time_base: tb, title: String::new() };
-    let mut packets = Vec::new();
-    let mut out = Vec::new();
-    let mut n = 0i64;
-    decode_video(&input, v, &dec, |frame| {
-        let nv12 = to_nv12(frame)?;
-        // SAFETY: owned frame.
-        unsafe { (*nv12.0).pts = n };
-        n += 1;
-        enc.encode(Some(&nv12), &mut out)?;
-        packets.extend(out.drain(..).map(|p| av::EncodedPacket::from_av(av::StreamId::Video(0), &p, tb, crate::Timestamp(0))));
-        Ok(true)
-    })?;
-    enc.encode(None, &mut out)?;
-    packets.extend(out.drain(..).map(|p| av::EncodedPacket::from_av(av::StreamId::Video(0), &p, tb, crate::Timestamp(0))));
-    Ok((info, packets))
+    let work = crate::files::WorkDir::new(dst.parent().unwrap_or(Path::new(".")))?;
+    let cut = work.path().join("cut.mkv");
+    let input = if let Some((a, b)) = range { crate::media::trim(src, &cut, a, b)?; &cut } else { src };
+    let tmp = work.path().join(format!("mix.{}", dst.extension().and_then(|s| s.to_str()).unwrap_or("mkv")));
+    let mut cmd = crate::ffmpeg::command()?;
+    cmd.arg("-i").arg(input).args(["-map", "0:v?", "-c:v", "copy"]);
+    audio_args(&mut cmd, input, Some(spec), OriginalAudio::Copy)?;
+    cmd.arg(&tmp);
+    crate::ffmpeg::run(cmd, None, crate::media::duration(input).unwrap_or(1.0))?;
+    std::fs::rename(tmp, dst)?;
+    Ok(())
 }
 
-/// Decodes one audio stream to interleaved stereo f32 at 48 kHz and adds it,
-/// times `gain`, into `mix`, placed by timestamp from 0 (Lanes files are
-/// 48 kHz; others are not resampled).
+/// Budget includes audio and container overhead. Callers reject <300 kbps.
+pub fn target_video_kbps(max_bytes: u64, duration: f64) -> u32 {
+    let budget = max_bytes as f64 * 0.94;
+    ((budget * 8.0 / duration.max(0.5) / 1000.0 - f64::from(AUDIO_KBPS)).max(0.0) as u32).min(50_000)
+}
+
+#[cfg(test)]
 fn decode_audio_into(src: &Path, idx: usize, gain: f32, mix: &mut Vec<f32>) -> Result<()> {
     let input = Input::open(src)?;
     let st = input.streams()[idx];
@@ -456,6 +294,16 @@ mod tests {
         assert!((got - want).abs() < want * 0.05, "{what}: rms {got}, expected {want}");
     }
 
+    fn packet_payloads(path: &Path, stream: usize) -> Vec<Vec<u8>> {
+        let input = Input::open(path).unwrap();
+        let mut packet = Packet::alloc().unwrap();
+        let mut out = Vec::new();
+        while input.read(&mut packet).unwrap().is_some() {
+            if packet.raw().stream_index as usize == stream { out.push(packet.data().to_vec()); }
+        }
+        out
+    }
+
     #[test]
     fn edited_copy_renders_the_mix_from_the_lanes() {
         let dir = std::env::temp_dir().join(format!("lanes-edit-{}", std::process::id()));
@@ -471,6 +319,8 @@ mod tests {
         assert_near(rms(&dst, 0), 0.4 / SQRT_2, "mix");
         assert_near(rms(&dst, 1), 0.3 / SQRT_2, "game lane");
         assert_near(rms(&dst, 2), 0.2 / SQRT_2, "music lane");
+        assert_eq!(packet_payloads(&src, 1), packet_payloads(&dst, 1), "mix-only edits must preserve original lane packets");
+        assert_eq!(packet_payloads(&src, 2), packet_payloads(&dst, 2));
 
         // Music muted (left out): the mix is only the game.
         let muted = dir.join("muted.mkv");
@@ -489,7 +339,7 @@ mod tests {
         assert!((2000..2600).contains(&kbps), "{kbps}");
         let total_bytes = (f64::from(kbps + AUDIO_KBPS) * 125.0 * 30.0) as u64;
         assert!(total_bytes < 10 * 1024 * 1024);
-        // Very long clips hit the quality floor instead of going to zero.
-        assert_eq!(target_video_kbps(1024 * 1024, 600.0), 300);
+        // Impossible budgets are rejected, rather than silently exceeding the limit.
+        assert_eq!(target_video_kbps(1024 * 1024, 600.0), 0);
     }
 }

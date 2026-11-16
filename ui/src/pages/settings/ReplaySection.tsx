@@ -31,7 +31,7 @@ export function ReplaySection({ settings }: { settings: Settings }) {
           readoutWidth="w-20"
         />
       </Field>
-      <Field label="Storage" hint={r.storage === "ram" ? "Fastest, no disk writes. Uses memory." : "Uses a temporary file: low memory, constant disk writes."}>
+      <Field label="Storage" hint={`${r.storage === "ram" ? "Fastest, no disk writes. Uses memory." : "Uses a temporary file: low memory, constant disk writes."} Switching storage restarts and empties the replay buffer.`}>
         <Segmented
           value={r.storage}
           onChange={(storage) => set({ storage })}

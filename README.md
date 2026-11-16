@@ -71,6 +71,9 @@ start with a track of all lanes mixed, so Discord, browsers and phones play ever
 - Audio mix after the fact: volume, mute and solo for every lane while watching (no 3-source limit), remembered per clip
 - "Save copy": the trim selection plus your audio mix in one file; its first track is the new mix (what Discord plays), the lanes stay separate
 - Play with slow motion (down to 0.1x) and keyboard controls (? shows them), trim losslessly, convert to MP4
+- Cut & crop: split at the playhead, remove middle sections, or keep/remove a selected range; the kept segments are joined into a new MP4
+- Crop all four edges with a live guide, including square and portrait presets; undo/redo edits and preview the kept sequence before saving
+- Precise edits preserve separate audio lanes and remap bookmarks; exports show progress and can be cancelled without changing the original
 - Share: one-click copy with your audio mix in one track and sized for Discord; drag it out, copy it (Ctrl+V in Discord) or send it to a Discord channel via webhook
 - Drag a clip straight from the library or the viewer into Discord, a chat or a folder
 - Select several clips (or all) and delete them to the recycle bin, or show a file in its folder
@@ -115,6 +118,17 @@ cargo test --workspace                      # unit tests (no hardware needed)
 cargo test -p lanes-core --test live_session -- --ignored --nocapture   # real capture/encode test
 pnpm build                                  # release + per-machine NSIS installer
 ```
+
+The clip editor uses the bundled `ffmpeg.exe` and shared libraries; no system
+FFmpeg installation is needed. Precise cuts and crops currently encode H.264
+with x264 on the CPU (the default GPL FFmpeg build), while simple trims remain
+lossless. Up to 32 kept segments are supported. Edit/share exports stream media
+through the worker instead of loading a whole recording into memory.
+
+Editor regression checks: `pnpm --filter lanes-ui test` and
+`cargo test -p lanes-core --test edit_export`. The latter generates synthetic
+media and checks removed sections, crop dimensions, audio tracks, cancellation,
+and share-size limits without capturing your screen.
 
 `pnpm package:portable` then packs `target/release/lanes.exe` and the FFmpeg DLLs into
 `target/release/bundle/portable/*.zip`. The installer is unsigned until you configure signing

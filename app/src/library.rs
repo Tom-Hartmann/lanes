@@ -89,17 +89,24 @@ fn key(path: &Path) -> String {
 impl Library {
     pub fn load(dir: &Path) -> Self {
         let path = dir.join("library.json");
-        let index = fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let read = |p: &Path| fs::read(p).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let index = read(&path).or_else(|| {
+            let backup = read(&path.with_extension("json.bak"));
+            if backup.is_some() { log::warn!("restored library metadata from backup"); }
+            backup
+        }).unwrap_or_default();
         Self { path, index: Mutex::new(index) }
     }
 
-    fn save(&self, index: &HashMap<String, Entry>) {
-        if let Some(dir) = self.path.parent() {
-            let _ = fs::create_dir_all(dir);
-        }
-        if let Ok(bytes) = serde_json::to_vec(index) {
-            let _ = fs::write(&self.path, bytes);
-        }
+    fn save(&self, index: &HashMap<String, Entry>) -> std::io::Result<()> {
+        let bytes = serde_json::to_vec(index).map_err(std::io::Error::other)?;
+        // Preserve only a valid previous index; never overwrite a good backup
+        // with a damaged primary recovered during load.
+        if let Ok(previous) = fs::read(&self.path)
+            && serde_json::from_slice::<HashMap<String, Entry>>(&previous).is_ok() {
+                lanes_core::files::atomic_write(&self.path.with_extension("json.bak"), &previous)?;
+            }
+        lanes_core::files::atomic_write(&self.path, &bytes)
     }
 
     /// A file Lanes just saved, with the game ("" = none) and its bookmarks.
@@ -113,7 +120,7 @@ impl Library {
             ..Entry::new(kind)
         };
         index.insert(key(path), entry);
-        self.save(&index);
+        if let Err(e) = self.save(&index) { log::error!("could not persist library metadata: {e}"); }
     }
 
     /// A copy of `src` (remux, trim). `range`: the trimmed part, so bookmarks
@@ -135,24 +142,41 @@ impl Library {
             ..Entry::new(kind)
         };
         index.insert(key(dst), entry);
-        self.save(&index);
+        if let Err(e) = self.save(&index) { log::error!("could not persist library metadata: {e}"); }
     }
 
     /// Stores (or clears) the viewer's audio mix for a file.
-    pub fn set_mix(&self, path: &Path, mix: Option<serde_json::Value>) {
+    pub fn add_edit(&self, src: &Path, dst: &Path, edit: &lanes_core::edit::EditSpec) -> std::io::Result<()> {
+        let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+        let from = index.get(&key(src)).cloned();
+        let entry = Entry {
+            duration: lanes_core::media::duration(dst),
+            size: fs::metadata(dst)?.len(),
+            game: from.as_ref().and_then(|e| e.game.clone()),
+            markers: from.as_ref().map_or_else(Vec::new, |e| edit.markers(&e.markers)),
+            mix: from.as_ref().and_then(|e| e.mix.clone()),
+            mix_baked: from.and_then(|e| e.mix_baked),
+            ..Entry::new(Kind::Clip)
+        };
+        index.insert(key(dst), entry);
+        self.save(&index)
+    }
+
+    /// Stores (or clears) the viewer's audio mix for a file.
+    pub fn set_mix(&self, path: &Path, mix: Option<serde_json::Value>) -> std::io::Result<()> {
         let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
         index.entry(key(path)).or_insert_with(|| Entry::new(Kind::Recording)).mix = mix;
-        self.save(&index);
+        self.save(&index)
     }
 
     /// A copy whose mixed track was rendered from `mix` (the viewer's lane
     /// state): the viewer starts from it and knows the file already sounds so.
-    pub fn set_baked_mix(&self, path: &Path, mix: Option<serde_json::Value>) {
+    pub fn set_baked_mix(&self, path: &Path, mix: Option<serde_json::Value>) -> std::io::Result<()> {
         let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
         let entry = index.entry(key(path)).or_insert_with(|| Entry::new(Kind::Clip));
         entry.mix = mix.clone();
         entry.mix_baked = mix;
-        self.save(&index);
+        self.save(&index)
     }
 
     pub fn kind(&self, path: &Path) -> Option<Kind> {
@@ -161,8 +185,8 @@ impl Library {
 
     pub fn remove(&self, path: &Path) {
         let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
-        if index.remove(&key(path)).is_some() {
-            self.save(&index);
+        if index.remove(&key(path)).is_some() && let Err(e) = self.save(&index) {
+            log::error!("could not persist library metadata: {e}");
         }
     }
 
@@ -210,8 +234,8 @@ impl Library {
                 });
             }
         }
-        if dirty {
-            self.save(&index);
+        if dirty && let Err(e) = self.save(&index) {
+            log::error!("could not persist library metadata: {e}");
         }
         out.sort_by_key(|c| std::cmp::Reverse(c.created_ms));
         out
@@ -228,6 +252,20 @@ pub fn is_within(path: &Path, roots: &[PathBuf]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovers_valid_backup_after_primary_corruption() {
+        let dir = lanes_core::files::WorkDir::new(&std::env::temp_dir()).unwrap();
+        let lib = Library::load(dir.path());
+        let file = dir.path().join("clip.mp4");
+        lib.set_mix(&file, Some(serde_json::json!([1]))).unwrap();
+        lib.set_mix(&file, Some(serde_json::json!([2]))).unwrap();
+        fs::write(dir.path().join("library.json"), b"{broken").unwrap();
+        let restored = Library::load(dir.path());
+        assert_eq!(restored.index.lock().unwrap()[&key(&file)].mix, Some(serde_json::json!([1])));
+        restored.set_mix(&file, Some(serde_json::json!([3]))).unwrap();
+        assert!(serde_json::from_slice::<HashMap<String, Entry>>(&fs::read(dir.path().join("library.json.bak")).unwrap()).is_ok());
+    }
 
     #[test]
     fn lists_videos_and_remembers_kind() {

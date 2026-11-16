@@ -1,3 +1,4 @@
+import type { ClipEdit } from "./clipEdits";
 // Typed bridge to the Rust backend. This file is the contract: every command
 // and event the UI uses is declared here and mirrors app/src/*.rs and
 // core/src/config.rs (serde camelCase). Keep both sides in sync.
@@ -439,6 +440,10 @@ export const api = {
   saveClipCopy: (path: string, range: [number, number] | null, mix: MixSpec | null, viewerMix: unknown) =>
     invoke<string>("save_clip_copy", { path, range, mix, viewerMix }),
 
+  renderClipEdit: (path: string, edit: ClipEdit, mix: MixSpec | null, viewerMix: unknown, jobId: string) =>
+    invoke<string>("render_clip_edit", { path, edit, mix, viewerMix, jobId }),
+  cancelClipEdit: (jobId: string) => invoke<void>("cancel_clip_edit", { jobId }),
+
   /** Audio track names (lanes) of a clip. */
   clipTracks: (path: string) => invoke<string[]>("clip_tracks", { path }),
   /** Share copy with one mixed audio track (tracks: indices, null = all); maxMb 0 = no limit. */
@@ -465,6 +470,7 @@ const on =
     listen<T>(name, (e) => cb(e.payload));
 
 export const events = {
+  onClipEditProgress: on<{ jobId: string; fraction: number }>("clip_edit_progress"),
   onLog: on<LogEntry>("log"),
   onAction: on<ActionEvent>("action"),
   onStatus: on<EngineStatus>("status"),

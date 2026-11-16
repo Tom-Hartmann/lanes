@@ -5,12 +5,14 @@ mod actions;
 mod bindings;
 mod commands;
 mod detect;
+mod edit_jobs;
 mod feedback;
 mod hotkeys;
 mod instance;
 mod library;
 mod logbus;
 mod overlay;
+mod playback;
 mod settings;
 mod share;
 mod state;
@@ -166,6 +168,8 @@ pub fn run() {
             commands::open_output_folder,
             commands::remux_clip,
             commands::save_clip_copy,
+            commands::render_clip_edit,
+            commands::cancel_clip_edit,
             commands::clip_tracks,
             commands::clip_audio_preview,
             commands::set_clip_mix,

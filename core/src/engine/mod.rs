@@ -672,8 +672,8 @@ impl Control {
         }
     }
 
-    fn file_plans(&self, base_name: &str, ext: &str, folder: &std::path::Path, lanes: Option<&[String]>) -> Vec<FilePlan> {
-        let Some(session) = &self.session else { return Vec::new() };
+    fn file_plans(&self, base_name: &str, ext: &str, folder: &std::path::Path, lanes: Option<&[String]>) -> Result<Vec<FilePlan>> {
+        let Some(session) = &self.session else { return Ok(Vec::new()) };
         let audio_ids: Vec<StreamId> = self
             .config
             .audio
@@ -701,7 +701,8 @@ impl Control {
                 let name = if multi { format!("{base_name}_{}", naming::sanitize(&v.plan.title)) } else { base_name.to_string() };
                 let mut streams = vec![v.info.id];
                 streams.extend(audio_ids.iter().copied());
-                FilePlan { path: naming::unique_path(folder, &name, ext), streams }
+                let reservation = naming::unique_path(folder, &name, ext)?;
+                Ok(FilePlan { path: reservation.to_path_buf(), streams, _reservation: reservation })
             })
             .collect()
     }
@@ -723,7 +724,10 @@ impl Control {
                 return;
             }
         let name = naming::render(&self.config.output.filename_template, &naming::NameParts::now(&self.game_name(), &self.config.profile_name, ""));
-        let files = self.file_plans(&name, "mkv", &self.config.output.folder.clone(), None);
+        let files = match self.file_plans(&name, "mkv", &self.config.output.folder.clone(), None) {
+            Ok(files) => files,
+            Err(e) => { self.error(Component::Recorder, e.to_string(), true); self.maybe_end_session(); return; }
+        };
         let (reply, rx) = bounded(1);
         let session = self.session.as_ref().expect("ensured");
         let _ = session.router.commands.send(RouterCommand::StartRecording { files: files.clone(), reply });
@@ -790,11 +794,14 @@ impl Control {
                     out.push(p);
                     continue;
                 }
-                let mp4 = naming::unique_path(p.parent().unwrap_or(std::path::Path::new(".")), &p.file_stem().unwrap_or_default().to_string_lossy(), "mp4");
+                let mp4 = match naming::unique_path(p.parent().unwrap_or(std::path::Path::new(".")), &p.file_stem().unwrap_or_default().to_string_lossy(), "mp4") {
+                    Ok(path) => path,
+                    Err(e) => { log::error!("reserving remux output: {e}"); out.push(p); continue; }
+                };
                 match crate::media::remux(&p, &mp4) {
                     Ok(()) => {
                         let _ = std::fs::remove_file(&p);
-                        out.push(mp4);
+                        out.push(mp4.to_path_buf());
                     }
                     Err(e) => {
                         log::error!("remux of {} failed: {e}; keeping the MKV", p.display());
@@ -867,7 +874,10 @@ impl Control {
         let template = preset.filename_template.clone().unwrap_or_else(|| self.config.output.filename_template.clone());
         let name = naming::render(&template, &naming::NameParts::now(&self.game_name(), &self.config.profile_name, &preset.name));
         let container = if self.config.output.remux_to_mp4 { Container::Mp4 } else { Container::Matroska };
-        let files = self.file_plans(&name, container.extension(), &folder, preset.lanes.as_deref());
+        let files = match self.file_plans(&name, container.extension(), &folder, preset.lanes.as_deref()) {
+            Ok(files) => files,
+            Err(e) => { self.error(Component::Clip, e.to_string(), true); return; }
+        };
         let Some(s) = &self.session else { return };
         let sink = self.sink.clone();
         let quality = preset.quality;

@@ -151,7 +151,8 @@ pub(crate) fn copy_streams(src: &Path, dst: &Path, opts: &CopyOptions<'_>) -> Re
             });
         }
     }
-    let tmp = dst.with_extension("partial");
+    let work = crate::files::WorkDir::new(dst.parent().unwrap_or(Path::new(".")))?;
+    let tmp = work.path().join("output.partial");
     let container = crate::mux::Container::from_path(dst);
     let result = copy_packets(&input, video, &infos, opts, &tmp, container);
     if result.is_err() {
@@ -479,7 +480,8 @@ pub fn transcode(src: &Path, dst: &Path, backend: EncoderBackend, codec: VideoCo
             });
         }
     }
-    let tmp = dst.with_extension("partial");
+    let work = crate::files::WorkDir::new(dst.parent().unwrap_or(Path::new(".")))?;
+    let tmp = work.path().join("output.partial");
     let mut mux = crate::mux::Muxer::create(&tmp, crate::mux::Container::from_path(dst), &infos)?;
 
     // Pass 1: video.

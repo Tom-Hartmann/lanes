@@ -26,8 +26,9 @@ $stage = Join-Path ([IO.Path]::GetTempPath()) ("lanes-portable-" + [Guid]::NewGu
 New-Item -ItemType Directory "$stage\Lanes" | Out-Null
 try {
     Copy-Item $exe "$stage\Lanes\Lanes.exe"
-    # Only the libraries lanes.exe links (directly or through avcodec).
-    foreach ($dll in 'avcodec-*.dll', 'avformat-*.dll', 'avutil-*.dll', 'swresample-*.dll') {
+    Copy-Item "$ffmpeg\bin\ffmpeg.exe" "$stage\Lanes\"
+    # The editor worker and all of its shared-library dependencies.
+    foreach ($dll in 'avcodec-*.dll', 'avformat-*.dll', 'avutil-*.dll', 'swresample-*.dll', 'avfilter-*.dll', 'avdevice-*.dll', 'swscale-*.dll') {
         Copy-Item "$ffmpeg\bin\$dll" "$stage\Lanes\"
     }
     Copy-Item "$ffmpeg\LICENSE.txt" "$stage\Lanes\FFmpeg-LICENSE.txt"

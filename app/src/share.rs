@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use windows::Win32::Foundation::{HANDLE, HGLOBAL};
+use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND, GlobalFree};
 use windows::Win32::System::Com::IDataObject;
 use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
@@ -55,7 +55,18 @@ pub fn drag_file(path: &Path) -> windows::core::Result<bool> {
 }
 
 /// Puts `path` on the clipboard as a file (like Ctrl+C in Explorer).
-pub fn copy_file(path: &Path) -> Result<(), String> {
+pub fn copy_file(path: &Path, owner: HWND) -> Result<(), String> {
+    struct Block(Option<HGLOBAL>);
+    impl Drop for Block {
+        fn drop(&mut self) {
+            // SAFETY: owned allocation, unless transferred to the clipboard.
+            if let Some(mem) = self.0 { unsafe { let _ = GlobalFree(Some(mem)); } }
+        }
+    }
+    struct Clipboard;
+    impl Drop for Clipboard {
+        fn drop(&mut self) { unsafe { let _ = CloseClipboard(); } }
+    }
     let wide: Vec<u16> = path.as_os_str().encode_wide_with_nul();
     let header = size_of::<DROPFILES>();
     let bytes = header + (wide.len() + 1) * 2; // list ends with an extra NUL
@@ -63,6 +74,7 @@ pub fn copy_file(path: &Path) -> Result<(), String> {
     // double-NUL-terminated path; ownership passes to the clipboard on success.
     unsafe {
         let mem: HGLOBAL = GlobalAlloc(GMEM_MOVEABLE, bytes).map_err(|e| e.to_string())?;
+        let mut block = Block(Some(mem));
         let ptr = GlobalLock(mem) as *mut u8;
         if ptr.is_null() {
             return Err("GlobalLock failed".into());
@@ -73,11 +85,12 @@ pub fn copy_file(path: &Path) -> Result<(), String> {
         (*drop).fWide = true.into();
         std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr.add(header) as *mut u16, wide.len());
         let _ = GlobalUnlock(mem);
-        OpenClipboard(None).map_err(|e| format!("clipboard busy: {e}"))?;
-        let _ = EmptyClipboard();
-        let set = SetClipboardData(u32::from(CF_HDROP.0), Some(HANDLE(mem.0)));
-        let _ = CloseClipboard();
-        set.map(|_| ()).map_err(|e| e.to_string())
+        OpenClipboard(Some(owner)).map_err(|e| format!("clipboard busy: {e}"))?;
+        let _clipboard = Clipboard;
+        EmptyClipboard().map_err(|e| e.to_string())?;
+        SetClipboardData(u32::from(CF_HDROP.0), Some(HANDLE(mem.0))).map_err(|e| e.to_string())?;
+        block.0 = None;
+        Ok(())
     }
 }
 

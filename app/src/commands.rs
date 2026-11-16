@@ -14,7 +14,7 @@ use lanes_core::capture::{Target, thumbnail};
 use lanes_core::encode::EncoderInfo;
 use lanes_core::engine::{EngineStatus, naming};
 use lanes_platform::admin;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::actions::{self, Action, Trigger};
 use crate::bindings::BindingInfo;
@@ -256,11 +256,10 @@ pub async fn prepare_clip_playback(app: AppHandle, path: String) -> CmdResult<St
         if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp4")) {
             return Ok(path);
         }
+        let _guard = crate::playback::WRITER.lock().unwrap_or_else(|e| e.into_inner());
         let cache = state::playback_cache_dir();
         std::fs::create_dir_all(&cache).map_err(err)?;
-        let meta = std::fs::metadata(&p).map_err(err)?;
-        let stamp = meta.modified().ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
-        let name = format!("{}_{stamp}_{}.mp4", naming::sanitize(&p.file_stem().unwrap_or_default().to_string_lossy()), meta.len());
+        let name = format!("{}.mp4", crate::playback::key(&p).map_err(err)?);
         let out = cache.join(name);
         if !out.exists() {
             lanes_core::media::remux(&p, &out).map_err(err)?;
@@ -276,11 +275,10 @@ pub async fn prepare_clip_playback(app: AppHandle, path: String) -> CmdResult<St
 pub async fn clip_audio_preview(app: AppHandle, path: String) -> CmdResult<Vec<String>> {
     blocking(move || {
         let p = checked_path(&app.state::<AppState>(), &path)?;
+        let _guard = crate::playback::WRITER.lock().unwrap_or_else(|e| e.into_inner());
         let cache = state::playback_cache_dir();
         std::fs::create_dir_all(&cache).map_err(err)?;
-        let meta = std::fs::metadata(&p).map_err(err)?;
-        let stamp = meta.modified().ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
-        let base = format!("{}_{stamp}_{}", naming::sanitize(&p.file_stem().unwrap_or_default().to_string_lossy()), meta.len());
+        let base = crate::playback::key(&p).map_err(err)?;
         prune_cache(&cache, &base);
         let count = lanes_core::media::audio_track_titles(&p).map_err(err)?.len();
         (0..count)
@@ -338,7 +336,7 @@ pub async fn remux_clip(app: AppHandle, path: String) -> CmdResult<String> {
         let state = app.state::<AppState>();
         let p = checked_path(&state, &path)?;
         let dir = p.parent().unwrap_or(Path::new("."));
-        let out = naming::unique_path(dir, &p.file_stem().unwrap_or_default().to_string_lossy(), "mp4");
+        let out = naming::unique_path(dir, &p.file_stem().unwrap_or_default().to_string_lossy(), "mp4").map_err(err)?;
         lanes_core::media::remux(&p, &out).map_err(err)?;
         state.library.add_copy(&p, &out, kind_of(&state, &p), None);
         Ok(out.to_string_lossy().into_owned())
@@ -367,18 +365,44 @@ pub async fn save_clip_copy(
             (true, false) => "trim",
             (false, _) => "mix",
         };
-        let out = naming::unique_path(dir, &format!("{}_{suffix}", p.file_stem().unwrap_or_default().to_string_lossy()), &ext);
+        let out = naming::unique_path(dir, &format!("{}_{suffix}", p.file_stem().unwrap_or_default().to_string_lossy()), &ext).map_err(err)?;
         lanes_core::share::edited_copy(&p, &out, range, mix.as_ref()).map_err(err)?;
         let kind = if range.is_some() { library::Kind::Clip } else { kind_of(&state, &p) };
         state.library.add_copy(&p, &out, kind, range);
         if mix.is_some() {
-            state.library.set_baked_mix(&out, viewer_mix);
+            state.library.set_baked_mix(&out, viewer_mix).map_err(err)?;
         }
         log::info!("edited copy: {} (cut: {}, new mix: {})", out.display(), range.is_some(), mix.is_some());
         Ok(out.to_string_lossy().into_owned())
     })
     .await
 }
+
+/// Saves precise kept segments and a crop as a new MP4, with progress events.
+#[tauri::command]
+pub async fn render_clip_edit(
+    app: AppHandle, path: String, edit: lanes_core::edit::EditSpec,
+    mix: Option<lanes_core::share::MixSpec>, viewer_mix: Option<serde_json::Value>, job_id: String,
+) -> CmdResult<String> {
+    let job = crate::edit_jobs::Job::start(job_id.clone())?;
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let source = checked_path(&state, &path)?;
+        let out = naming::unique_path(source.parent().ok_or("missing clip directory")?,
+            &format!("{}_edit", source.file_stem().unwrap_or_default().to_string_lossy()), "mp4").map_err(err)?;
+        let progress = |fraction: f64| { let _ = app.emit("clip_edit_progress", serde_json::json!({ "jobId": job_id, "fraction": fraction })); };
+        progress(0.0); // Job is registered before the UI enables cancellation.
+        lanes_core::edit::render(&source, &out, &edit, mix.as_ref(), &lanes_core::ffmpeg::Control {
+            cancel: &job.cancelled, progress: &progress,
+        }).map_err(err)?;
+        state.library.add_edit(&source, &out, &edit).map_err(|e| format!("Copy saved to {}, but its metadata could not be saved: {e}", out.display()))?;
+        if mix.is_some() { state.library.set_baked_mix(&out, viewer_mix).map_err(err)?; }
+        Ok(out.to_string_lossy().into_owned())
+    }).await
+}
+
+#[tauri::command]
+pub fn cancel_clip_edit(job_id: String) { crate::edit_jobs::cancel(&job_id); }
 
 /// Audio track names of a clip (lane names), for choosing what to share.
 #[tauri::command]
@@ -406,7 +430,7 @@ pub async fn share_clip(
         let p = checked_path(&state, &path)?;
         let dir = p.parent().unwrap_or(Path::new(".")).join("Shared");
         std::fs::create_dir_all(&dir).map_err(err)?;
-        let out = naming::unique_path(&dir, &format!("{}_share", p.file_stem().unwrap_or_default().to_string_lossy()), "mp4");
+        let out = naming::unique_path(&dir, &format!("{}_share", p.file_stem().unwrap_or_default().to_string_lossy()), "mp4").map_err(err)?;
         let backend = state
             .gpu()
             .and_then(|gpu| lanes_core::encode::resolve(lanes_core::encode::available(gpu), state.settings().encoder.backend, lanes_core::config::VideoCodec::H264))
@@ -426,9 +450,9 @@ pub async fn share_clip(
 
 /// Puts a clip on the clipboard as a file: Ctrl+V in Discord uploads it.
 #[tauri::command]
-pub fn copy_clip_file(state: State<'_, AppState>, path: String) -> CmdResult<()> {
+pub fn copy_clip_file(window: tauri::WebviewWindow, state: State<'_, AppState>, path: String) -> CmdResult<()> {
     let p = checked_path(&state, &path)?;
-    crate::share::copy_file(&p)
+    crate::share::copy_file(&p, window.hwnd().map_err(err)?)
 }
 
 /// Starts a native drag of a clip. Sync on purpose: OLE drag & drop must run
@@ -447,7 +471,7 @@ fn kind_of(state: &AppState, path: &Path) -> library::Kind {
 #[tauri::command]
 pub fn set_clip_mix(state: State<'_, AppState>, path: String, mix: Option<serde_json::Value>) -> CmdResult<()> {
     let p = checked_path(&state, &path)?;
-    state.library.set_mix(&p, mix);
+    state.library.set_mix(&p, mix).map_err(err)?;
     Ok(())
 }
 

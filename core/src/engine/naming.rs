@@ -64,13 +64,39 @@ pub fn sanitize(name: &str) -> String {
     }
 }
 
-/// `dir/name.ext`, adding `_2`, `_3`... if the file already exists.
-pub fn unique_path(dir: &Path, name: &str, ext: &str) -> PathBuf {
-    let first = dir.join(format!("{name}.{ext}"));
-    if !first.exists() {
-        return first;
+/// A cross-thread/process reservation, held until the writer finishes.
+#[derive(Clone, Debug)]
+pub struct ReservedPath(std::sync::Arc<Reservation>);
+
+#[derive(Debug)]
+struct Reservation { path: PathBuf, lock: PathBuf }
+
+impl Drop for Reservation {
+    fn drop(&mut self) { let _ = std::fs::remove_file(&self.lock); }
+}
+
+impl std::ops::Deref for ReservedPath {
+    type Target = Path;
+    fn deref(&self) -> &Path { &self.0.path }
+}
+
+/// Atomically reserves `dir/name.ext`, adding a counter on collisions.
+pub fn unique_path(dir: &Path, name: &str, ext: &str) -> std::io::Result<ReservedPath> {
+    std::fs::create_dir_all(dir)?;
+    for n in 1u64.. {
+        let stem = if n == 1 { name.to_owned() } else { format!("{name}_{n}") };
+        let path = dir.join(format!("{stem}.{ext}"));
+        let lock = dir.join(format!("{stem}.{ext}.reserve"));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
+            Ok(_) => {
+                let reserved = ReservedPath(std::sync::Arc::new(Reservation { path, lock }));
+                if !reserved.exists() { return Ok(reserved); }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
     }
-    (2..).map(|n| dir.join(format!("{name}_{n}.{ext}"))).find(|p| !p.exists()).expect("unbounded")
+    Err(std::io::Error::other("filename space exhausted"))
 }
 
 #[cfg(test)]
@@ -107,10 +133,33 @@ mod tests {
     fn unique_path_appends_counter() {
         let dir = std::env::temp_dir().join(format!("lanes-naming-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let a = unique_path(&dir, "x", "mp4");
-        std::fs::write(&a, b"").unwrap();
-        let b = unique_path(&dir, "x", "mp4");
+        let a = unique_path(&dir, "x", "mp4").unwrap();
+        // Even before a writer creates the output, the name is reserved.
+        let b = unique_path(&dir, "x", "mp4").unwrap();
         assert_eq!(b.file_name().unwrap(), "x_2.mp4");
+        drop(a);
+        let c = unique_path(&dir, "x", "mp4").unwrap();
+        assert_eq!(c.file_name().unwrap(), "x.mp4");
+        drop((b, c));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn simultaneous_writers_reserve_different_paths() {
+        let dir = crate::files::WorkDir::new(&std::env::temp_dir()).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8).map(|_| {
+            let dir = dir.path().to_owned();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                unique_path(&dir, "same-second", "mp4").unwrap()
+            })
+        }).collect();
+        let reservations: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        let distinct: std::collections::HashSet<_> = reservations.iter().map(|p| p.to_path_buf()).collect();
+        assert_eq!(distinct.len(), 8);
+        drop(reservations);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 }

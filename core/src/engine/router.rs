@@ -25,6 +25,7 @@ use crate::util::{Priority, spawn};
 #[derive(Clone, Debug)]
 pub struct FilePlan {
     pub path: PathBuf,
+    pub _reservation: super::naming::ReservedPath,
     pub streams: Vec<StreamId>,
 }
 
@@ -242,9 +243,14 @@ impl Worker {
                     self.stats.replay_ms.store(0, Ordering::Relaxed);
                 }
                 Some((limits, storage, dir)) => match &mut self.replay {
-                    Some(r) => r.set_limits(limits),
-                    None => match ReplayBuffer::new(limits, storage, &dir) {
-                        Ok(r) => self.replay = Some(r),
+                    Some(r) if r.storage() == storage => r.set_limits(limits),
+                    _ => match ReplayBuffer::new(limits, storage, &dir) {
+                        Ok(r) => {
+                            self.replay = Some(r);
+                            self.stats.replay_bytes.store(0, Ordering::Relaxed);
+                            self.stats.replay_ms.store(0, Ordering::Relaxed);
+                            self.request_keyframes();
+                        }
                         Err(e) => (self.on_error)(e),
                     },
                 },
@@ -442,5 +448,29 @@ impl Recorder {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn storage_switch_rebuilds_buffer_and_resets_stats() {
+        let dir = crate::files::WorkDir::new(&std::env::temp_dir()).unwrap();
+        let stats = Arc::new(RouterStats::default());
+        let keyframe = Arc::new(AtomicBool::new(false));
+        let mut worker = Worker {
+            last_seen: Default::default(), deferred: Vec::new(), t0: Timestamp(0), streams: Vec::new(), replay: None,
+            recorder: None, keyframe_requests: vec![keyframe.clone()], stats: stats.clone(), on_error: Arc::new(|e| panic!("{e}")),
+        };
+        let limits = ReplayLimits { duration: Duration::from_secs(10), max_bytes: 1_000_000 };
+        worker.command(RouterCommand::SetReplay(Some((limits.clone(), ReplayStorage::Ram, dir.path().to_owned()))));
+        stats.replay_bytes.store(99, Ordering::Relaxed);
+        worker.command(RouterCommand::SetReplay(Some((limits.clone(), ReplayStorage::Disk, dir.path().to_owned()))));
+        assert_eq!(worker.replay.as_ref().unwrap().storage(), ReplayStorage::Disk);
+        assert_eq!(stats.replay_bytes.load(Ordering::Relaxed), 0);
+        assert!(keyframe.load(Ordering::Relaxed));
+        worker.command(RouterCommand::SetReplay(Some((limits, ReplayStorage::Ram, dir.path().to_owned()))));
+        assert_eq!(worker.replay.as_ref().unwrap().storage(), ReplayStorage::Ram);
     }
 }

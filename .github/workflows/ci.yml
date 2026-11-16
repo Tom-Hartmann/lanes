@@ -45,6 +45,9 @@ jobs:
       - name: UI typecheck
         run: pnpm typecheck
 
+      - name: UI editor tests
+        run: pnpm --filter lanes-ui test
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 

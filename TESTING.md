@@ -1,5 +1,27 @@
 # Testing
 
+## Clip editor regression coverage
+
+- `cargo test --workspace`: includes concurrent filename reservations, disk
+  snapshots surviving replay restart, live storage switching, playback-cache
+  identity, and recovery from a damaged library index.
+- `cargo test -p lanes-core --test edit_export`: synthetic video/audio exercises
+  precise middle cuts, cropping, preservation of audio lanes, cancellation and
+  partial-file cleanup, and enforced share-size limits.
+- `pnpm --filter lanes-ui test`: split/remove operations, aspect-ratio presets,
+  and undo/redo history.
+- `ui/tests/editor_browser.py`: Playwright + Edge smoke test against the Vite
+  harness, covering editor controls, export IPC payloads, selection/sequence
+  preview, progress/cancellation, and compact layout. The harness mocks native
+  commands; media encoding is checked separately by the Rust tests.
+
+To run the browser check, generate a synthetic 10-second MP4, start the UI dev
+server, then run `python ui/tests/editor_browser.py http://127.0.0.1:5173
+/@fs/C:/absolute/path/to/fixture.mp4` with Python Playwright installed. The
+harness is not included in production builds.
+
+Existing manual feature results below predate this editor update.
+
 Manual test status. Tick a box when a feature has been tried on real hardware and worked; add a
 note (machine, date, what broke) when it did not. Automated tests: `cargo test --workspace`, plus
 `cargo test -p lanes-core --test live_session -- --ignored --nocapture` for a real capture run.

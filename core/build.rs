@@ -18,7 +18,7 @@ fn main() {
     let Ok(entries) = fs::read_dir(&bin) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dll")) {
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dll")) || entry.file_name() == "ffmpeg.exe" {
             let dst = deps.join(entry.file_name());
             let stale = fs::metadata(&dst).map(|m| m.len()).ok() != fs::metadata(&path).map(|m| m.len()).ok();
             if stale {

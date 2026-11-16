@@ -1,9 +1,9 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { IconFolder, IconPlay, IconScissors, IconX } from "../../components/icons";
 import { Badge, Button, Callout, ConfirmButton, NumberInput, Spinner } from "../../components/ui";
 import { formatBytes, formatDate, formatDuration } from "../../lib/format";
-import { api, errorMessage, type ClipInfo } from "../../lib/ipc";
+import { api, errorMessage, events, type ClipInfo } from "../../lib/ipc";
 import { actionForKey, keyLabel, resolveViewerKeys, VIEWER_ACTIONS } from "../../lib/viewerKeys";
 import { attempt, notify } from "../../store/noticeStore";
 import { useSettingsStore } from "../../store/settingsStore";
@@ -12,6 +12,9 @@ import { forgetThumbnail } from "./thumbnails";
 import { SeekBar } from "./SeekBar";
 import { DragHandle, SharePanel } from "./SharePanel";
 import { TrimBar } from "./TrimBar";
+
+import { ClipEditor, CropOverlay } from "./ClipEditor";
+import { editHistory, initialHistory, hasCrop, type Segment } from "../../lib/clipEdits";
 
 interface Props {
   clip: ClipInfo;
@@ -72,6 +75,28 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
   const [playhead, setPlayhead] = useState(0);
   const [busy, setBusy] = useState<"save" | "remux" | null>(null);
   const previewEnd = useRef<number | null>(null);
+  const previewQueue = useRef<Segment[]>([]);
+  const [history, dispatchEdit] = useReducer(editHistory, undefined, initialHistory);
+  const draft = history.present;
+  const segments: Segment[] = draft.segments ?? [[0, duration]];
+  const advancedEdit = draft.segments !== null || hasCrop(draft.crop);
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const [exportProgress, setExportProgress] = useState<number | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const exportJob = useRef<string | null>(null);
+  const advancePreview = (v: HTMLVideoElement) => {
+    if (v.seeking || previewEnd.current === null || v.currentTime < previewEnd.current - 0.01) return;
+    const next = previewQueue.current.shift();
+    if (next) {
+      previewEnd.current = next[1];
+      v.currentTime = next[0];
+    } else {
+      const end = previewEnd.current;
+      previewEnd.current = null;
+      v.pause();
+      v.currentTime = end;
+    }
+  };
   const viewerSettings = useSettingsStore((s) => s.settings?.viewer);
   const keyMap = useMemo(() => resolveViewerKeys(viewerSettings), [viewerSettings]);
   const shortSeek = viewerSettings?.shortSeekSecs ?? 1;
@@ -114,7 +139,7 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
     if (!playing) return;
     let id = 0;
     const tick = () => {
-      if (video.current) setPlayhead(video.current.currentTime);
+      if (video.current) { advancePreview(video.current); setPlayhead(video.current.currentTime); }
       id = requestAnimationFrame(tick);
     };
     id = requestAnimationFrame(tick);
@@ -174,15 +199,27 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
 
   const [start, end] = range;
   const seek = (t: number) => {
+    previewEnd.current = null;
+    previewQueue.current = [];
     if (video.current) video.current.currentTime = t;
     setPlayhead(t);
   };
   const preview = () => {
     const v = video.current;
     if (!v) return;
+    previewQueue.current = [];
     previewEnd.current = end;
     v.currentTime = start;
-    void v.play();
+    void v.play().catch(() => {});
+  };
+
+  const previewSegments = () => {
+    const v = video.current;
+    if (!v || !segments.length) return;
+    previewQueue.current = segments.slice(1);
+    previewEnd.current = segments[0][1];
+    v.currentTime = segments[0][0];
+    void v.play().catch(() => {});
   };
 
   // Keyboard controls. Capture phase, so the native <video> controls do not
@@ -191,7 +228,7 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
   keys.current = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       if (help) setHelp(false);
-      else onClose();
+      else if (!busy) onClose();
       return;
     }
     if (isTyping(e.target) || e.ctrlKey || e.altKey || e.metaKey) return;
@@ -303,20 +340,44 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
 
   const trimmed = start > 0.05 || end < duration - 0.05;
   const bake = mixer.bake;
-  const edits = trimmed || bake !== null;
+  const edits = trimmed || bake !== null || advancedEdit;
 
   // A copy with what you see and hear: the selection (lossless) and the audio
   // mix rendered into its first track. The viewer then switches to the copy.
   const saveCopy = async () => {
     setBusy("save");
-    const out = await attempt("Could not save the copy", () =>
-      api.saveClipCopy(clip.path, trimmed ? [start, end] : null, bake, bake ? mixer.payload : null),
-    );
-    setBusy(null);
-    if (out) {
+    setCancelling(false);
+    let unlisten: (() => void) | undefined;
+    try {
+      let out: string;
+      if (advancedEdit) {
+        const jobId = crypto.randomUUID();
+        exportJob.current = jobId;
+        unlisten = await events.onClipEditProgress((p) => { if (p.jobId === jobId) setExportProgress(p.fraction); });
+        out = await api.renderClipEdit(clip.path, { segments: draft.segments ?? [[start, end]], crop: draft.crop }, bake, bake ? mixer.payload : null, jobId);
+      } else {
+        out = await api.saveClipCopy(clip.path, trimmed ? [start, end] : null, bake, bake ? mixer.payload : null);
+      }
       notify({ kind: "success", title: "Copy saved, now showing it", body: out, action: { label: "Show in folder", run: () => void api.revealClip(out) } });
       onOpenPath(out);
+    } catch (err) {
+      const message = errorMessage(err);
+      notify({ kind: message.includes("cancelled") ? "info" : "error", title: message.includes("cancelled") ? "Export cancelled" : "Could not save the copy", body: message });
+    } finally {
+      unlisten?.();
+      exportJob.current = null;
+      setExportProgress(null);
+      setBusy(null);
+      setCancelling(false);
     }
+  };
+
+  const cancelExport = async () => {
+    const job = exportJob.current;
+    if (!job) return;
+    setCancelling(true);
+    try { await api.cancelClipEdit(job); }
+    catch (err) { setCancelling(false); notify({ kind: "error", title: "Could not cancel export", body: errorMessage(err) }); }
   };
 
   const remux = async () => {
@@ -340,7 +401,7 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
   };
 
   const isMp4 = /\.mp4$/i.test(clip.path);
-  const saveWhat = [trimmed && "the selection", mixer.bakeReason === "mix" && "your audio mix", mixer.bakeReason === "track" && "a mixed track for Discord"]
+  const saveWhat = [draft.segments !== null ? "kept segments" : trimmed && "the selection", hasCrop(draft.crop) && "your crop", mixer.bakeReason === "mix" && "your audio mix", mixer.bakeReason === "track" && "a mixed track for Discord"]
     .filter(Boolean)
     .join(" + ");
 
@@ -349,7 +410,7 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
       onPointerDown={(e) => {
         resumeAudio();
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget && !busy) onClose();
       }}
     >
       <div className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900 shadow-2xl">
@@ -371,14 +432,14 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
                 : "Drag this file into Discord, a chat or a folder"
             }
           />
-          <button onClick={onClose} className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200" aria-label="Close">
+          <button onClick={onClose} disabled={busy !== null} className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200" aria-label="Close">
             <IconX size={16} />
           </button>
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div ref={player} className={fullscreen ? "flex h-full flex-col bg-black" : "bg-black"}>
-          <div className={`relative flex w-full items-center justify-center bg-black ${fullscreen ? "min-h-0 flex-1" : "aspect-video max-h-[55vh]"}`}>
+          <div ref={player} className={fullscreen ? "flex h-full flex-col bg-black" : "sticky top-0 z-30 bg-black"}>
+          <div className={`relative flex w-full items-center justify-center bg-black ${fullscreen ? "min-h-0 flex-1" : "aspect-video max-h-[34vh]"}`}>
             {flash && (
               <div
                 key={flash.id}
@@ -418,6 +479,7 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
                 <Spinner /> Preparing playback…
               </span>
             ) : (
+              <>
               <video
                 ref={video}
                 src={src}
@@ -428,6 +490,7 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
                 onEnded={() => setPlaying(false)}
                 className="h-full w-full cursor-pointer"
                 onLoadedMetadata={(e) => {
+                  setDimensions({ width: e.currentTarget.videoWidth, height: e.currentTarget.videoHeight });
                   const d = e.currentTarget.duration;
                   if (Number.isFinite(d) && d > 0) {
                     setDuration(d);
@@ -437,13 +500,11 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
                 onTimeUpdate={(e) => {
                   const t = e.currentTarget.currentTime;
                   setPlayhead(t);
-                  if (previewEnd.current !== null && t >= previewEnd.current) {
-                    previewEnd.current = null;
-                    e.currentTarget.pause();
-                  }
+                  advancePreview(e.currentTarget);
                 }}
-                onSeeking={() => (previewEnd.current = null)}
               />
+              {hasCrop(draft.crop) && <CropOverlay video={video} crop={draft.crop} />}
+              </>
             )}
           </div>
           <div className="bg-zinc-950 px-3 pt-1">
@@ -578,27 +639,38 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
               </div>
             )}
             <Callout>
-              Trimming is lossless and instant: cuts snap to the nearest keyframe, so the copy may start up to a keyframe
-              interval earlier than the selection.
+              {draft.segments !== null ? "The kept-segment list below defines your export. Use this selection to remove another range." : advancedEdit ? "The selection and crop are exported with precise cuts. Your original stays unchanged." : "A simple trim is lossless and snaps back to a keyframe. Use Cut & crop below for precise cuts and removing sections from the middle."}
             </Callout>
           </div>
+          <ClipEditor draft={draft} segments={segments} duration={duration} selection={range} playhead={playhead}
+            width={dimensions.width} height={dimensions.height} disabled={busy !== null} canUndo={history.past.length > 0} canRedo={history.future.length > 0}
+            onChange={(value) => dispatchEdit({ type: "change", value })} onUndo={() => dispatchEdit({ type: "undo" })} onRedo={() => dispatchEdit({ type: "redo" })}
+            onSeek={seek} onPreview={previewSegments} onClearSelection={() => setRange([0, duration])} />
         </div>
 
         <SharePanel
           clip={clip}
+          pendingEdit={advancedEdit}
           mix={mixer.choice}
           mixed={mixer.changed}
           hasAudio={(mixer.titles?.length ?? 0) > 0}
           range={trimmed ? [start, end] : null}
         />
 
+        {exportProgress !== null && <div className="border-t border-zinc-800 px-4 py-3" role="status" aria-live="polite">
+          <div className="mb-2 flex items-center gap-3 text-xs text-zinc-200">
+            <span className="flex-1">{cancelling ? "Cancelling export..." : `Saving edited copy - ${Math.round(exportProgress * 100)}%`}</span>
+            <Button size="sm" disabled={cancelling} onClick={() => void cancelExport()}>Cancel export</Button>
+          </div>
+          <progress aria-label="Export progress" max={1} value={exportProgress} className="h-2 w-full accent-sky-500" />
+        </div>}
         <footer className="flex flex-wrap items-center gap-2 border-t border-zinc-800 px-4 py-2.5">
           <Button
             size="sm"
             variant="primary"
             disabled={!edits || busy !== null || duration <= 0}
             onClick={() => void saveCopy()}
-            title={edits ? `Save a copy with ${saveWhat} (video is not re-encoded)` : "Trim the clip or change the audio mix first"}
+            title={edits ? `Save a copy with ${saveWhat}${advancedEdit ? "" : " (video is not re-encoded)"}` : "Trim the clip or change the audio mix first"}
           >
             {busy === "save" ? <Spinner /> : <IconScissors size={14} />} Save copy
           </Button>
@@ -612,7 +684,7 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
             <IconFolder size={14} /> Show in folder
           </Button>
           <div className="ml-auto">
-            <ConfirmButton onConfirm={() => void del()} confirmLabel="Click again to delete">
+            <ConfirmButton disabled={busy !== null} onConfirm={() => void del()} confirmLabel="Click again to delete">
               Delete
             </ConfirmButton>
           </div>

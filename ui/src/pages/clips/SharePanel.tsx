@@ -88,6 +88,7 @@ async function sendToDiscord(webhook: string, path: string, message: string, onP
 }
 
 interface Props {
+  pendingEdit?: boolean;
   clip: ClipInfo;
   mix: MixChoice;
   mixed: boolean;
@@ -96,7 +97,7 @@ interface Props {
   range: [number, number] | null;
 }
 
-export function SharePanel({ clip, mix, mixed, hasAudio, range }: Props) {
+export function SharePanel({ clip, mix, mixed, hasAudio, range, pendingEdit = false }: Props) {
   const settings = useSettingsStore((s) => s.settings);
   const game = useStatusStore((s) => s.status?.game?.name);
   const [maxMb, setMaxMb] = useState(String(settings?.share.maxMb ?? 10));
@@ -141,6 +142,12 @@ export function SharePanel({ clip, mix, mixed, hasAudio, range }: Props) {
     }
   };
 
+  if (pendingEdit) return (
+    <div className="border-t border-zinc-800 px-4 py-3 text-xs text-amber-300">
+      Save your cuts and crop as a copy first, then share the finished clip.
+    </div>
+  );
+
   return (
     <div className="flex flex-col gap-3 border-t border-zinc-800 px-4 py-3">
       <div className="flex flex-wrap items-center gap-3">
@@ -150,7 +157,7 @@ export function SharePanel({ clip, mix, mixed, hasAudio, range }: Props) {
         </span>
         <div className="ml-auto flex items-center gap-2">
           <Select value={maxMb} onChange={setMaxMb} options={SIZE_OPTIONS} />
-          <Button size="sm" onClick={() => void exportCopy()} disabled={busy !== null}>
+          <Button size="sm" onClick={() => void exportCopy()} disabled={busy !== null || pendingEdit}>
             {busy === "export" && <Spinner />} Create share copy
           </Button>
         </div>
@@ -159,7 +166,7 @@ export function SharePanel({ clip, mix, mixed, hasAudio, range }: Props) {
         A small copy for Discord & co: the trim selection, with the lanes mixed into one track as set in the audio mix.
         It is only re-encoded (on the GPU) when it has to fit the size limit. For full quality, use "Save copy" below.
       </p>
-      {result && (
+      {result && !pendingEdit && (
         <div className="flex flex-wrap items-center gap-2 rounded-md bg-zinc-900/80 px-3 py-2">
           <span className="min-w-0 flex-1 truncate text-xs text-zinc-400" title={result.path}>
             {result.path.split(/[\\/]/).pop()} · {formatBytes(result.sizeBytes)}
