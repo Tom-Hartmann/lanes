@@ -2,7 +2,7 @@
 //! disk-space guard.
 
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::FILETIME;
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
@@ -50,12 +50,21 @@ impl Default for CpuMeter {
 impl CpuMeter {
     pub fn sample(&mut self) -> f32 {
         let cpu = process_cpu_100ns();
-        let wall = self.last_wall.elapsed().as_nanos() as f64 / 100.0;
-        let used = cpu.saturating_sub(self.last_cpu) as f64;
+        let now = Instant::now();
+        let wall = now.duration_since(self.last_wall);
+        let used = cpu.saturating_sub(self.last_cpu);
         self.last_cpu = cpu;
-        self.last_wall = Instant::now();
-        if wall <= 0.0 { 0.0 } else { (used / wall / f64::from(self.cores) * 100.0) as f32 }
+        self.last_wall = now;
+        cpu_percent(used, wall, self.cores)
     }
+}
+
+fn cpu_percent(used_100ns: u64, elapsed: Duration, cores: u32) -> f32 {
+    if elapsed.is_zero() { return 0.0; }
+    // Process accounting and the wall clock are sampled separately. Their
+    // different resolution can produce overshoot over short intervals.
+    let available = elapsed.as_secs_f64() * 10_000_000.0 * f64::from(cores.max(1));
+    (used_100ns as f64 / available * 100.0).clamp(0.0, 100.0) as f32
 }
 
 fn process_cpu_100ns() -> u64 {
@@ -71,6 +80,18 @@ fn process_cpu_100ns() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cpu_percentage_handles_short_samples_and_accounting_overshoot() {
+        assert_eq!(cpu_percent(0, Duration::from_secs(1), 4), 0.0);
+        assert_eq!(cpu_percent(10_000_000, Duration::from_secs(1), 4), 25.0);
+        assert_eq!(cpu_percent(40_000_000, Duration::from_secs(1), 4), 100.0);
+        // Reproduce the approximately 102.7% reading observed on CI.
+        assert_eq!(cpu_percent(2_053_933, Duration::from_millis(100), 2), 100.0);
+        assert_eq!(cpu_percent(u64::MAX, Duration::from_nanos(1), 1), 100.0);
+        assert_eq!(cpu_percent(1, Duration::ZERO, 1), 0.0);
+        assert_eq!(cpu_percent(10_000_000, Duration::from_secs(1), 0), 100.0);
+    }
 
     #[test]
     fn readings_are_sane() {
