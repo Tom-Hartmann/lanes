@@ -90,11 +90,15 @@ pub(crate) fn audio_args(cmd: &mut std::process::Command, src: &Path, spec: Opti
 
 /// Export uses streaming FFmpeg decoding/muxing; memory does not scale with duration.
 pub fn export(src: &Path, dst: &Path, opts: &ShareOptions) -> Result<ShareResult> {
+    export_control(src, dst, opts, None)
+}
+
+pub fn export_control(src: &Path, dst: &Path, opts: &ShareOptions, control: Option<&crate::ffmpeg::Control<'_>>) -> Result<ShareResult> {
     if let Some((start, end)) = opts.range {
         let work = crate::files::WorkDir::new(dst.parent().unwrap_or(Path::new(".")))?;
         let cut = work.path().join("cut.mkv");
         crate::media::trim(src, &cut, start, end)?;
-        return export(&cut, dst, &ShareOptions { range: None, ..opts.clone() });
+        return export_control(&cut, dst, &ShareOptions { range: None, ..opts.clone() }, control);
     }
     let duration = crate::media::duration(src).filter(|d| d.is_finite() && *d > 0.0).ok_or_else(|| Error::Invalid("Cannot determine clip duration".into()))?;
     let work = crate::files::WorkDir::new(dst.parent().unwrap_or(Path::new(".")))?;
@@ -116,7 +120,7 @@ pub fn export(src: &Path, dst: &Path, opts: &ShareOptions) -> Result<ShareResult
                 }
             }
             cmd.args(["-movflags", "+faststart"]).arg(&tmp);
-            crate::ffmpeg::run(cmd, None, duration)
+            crate::ffmpeg::run(cmd, control, duration)
         };
         if let Err(e) = render(opts.backend) {
             if kbps.is_none() || opts.backend == EncoderBackend::X264 { return Err(e); }

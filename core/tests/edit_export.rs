@@ -31,7 +31,7 @@ fn crops_joins_kept_sections_and_preserves_audio() {
     let src = work.path().join("source.mkv");
     fixture(&src);
     let dst = work.path().join("edited.mp4");
-    let edit = EditSpec { segments: vec![(0.0, 1.5), (4.5, 6.0)], crop: Crop { left: 0.1, right: 0.1, top: 0.1, bottom: 0.1 } };
+    let edit = EditSpec { audio: Default::default(), segments: vec![(0.0, 1.5), (4.5, 6.0)], crop: Crop { left: 0.1, right: 0.1, top: 0.1, bottom: 0.1 } };
     let cancel = AtomicBool::new(false);
     let progress = std::sync::Mutex::new(Vec::new());
     lanes_core::edit::render(&src, &dst, &edit, Some(&MixSpec::default()), &Control {
@@ -67,7 +67,7 @@ fn cancellation_cleans_partial_exports_and_keeps_source() {
     let dst = work.path().join("cancelled.mp4");
     let cancel = AtomicBool::new(false);
     let result = lanes_core::edit::render(&src, &dst,
-        &EditSpec { segments: vec![(0.0, 6.0)], crop: Crop::default() }, None,
+        &EditSpec { audio: Default::default(), segments: vec![(0.0, 6.0)], crop: Crop::default() }, None,
         &Control { cancel: &cancel, progress: &|_| cancel.store(true, Ordering::Relaxed) });
     assert!(result.unwrap_err().to_string().contains("cancelled"));
     assert!(!dst.exists());
@@ -94,4 +94,47 @@ fn share_reencodes_to_an_enforced_size_limit() {
     assert!(result.reencoded);
     assert!(result.size_bytes <= limit);
     assert!((lanes_core::media::duration(&out).unwrap() - 6.0).abs() < 0.15, "must not fit by truncating the clip");
+}
+
+#[test]
+fn fades_waveform_and_reordered_segments() {
+    let work = WorkDir::new(&std::env::temp_dir()).unwrap();
+    let src = work.path().join("source.mkv");
+    fixture(&src);
+    let peaks = lanes_core::waveform::peaks(&src).unwrap();
+    assert_eq!(peaks.len(), 1200);
+    assert!(peaks.iter().all(|p| p.is_finite() && *p >= 0.0 && *p <= 1.0));
+    assert!(peaks.iter().any(|p| *p > 0.05));
+    let dst = work.path().join("faded.mp4");
+    let edit = EditSpec { segments: vec![(4.5, 6.0), (0.0, 1.5)], crop: Crop::default(),
+        audio: lanes_core::edit::AudioEffects { crossfade: 0.0, fade_in: 1.0, fade_out: 1.0, normalize: true, denoise: true } };
+    lanes_core::edit::render(&src, &dst, &edit, None, &Control { cancel: &AtomicBool::new(false), progress: &|_| {} }).unwrap();
+    let first = pixels(&dst, 0.5);
+    assert!(first[2] > 200 && first[0] < 30, "reordered first segment must be blue");
+    assert_eq!(lanes_core::media::audio_track_titles(&dst).unwrap().len(), 2);
+    for lane in ["0:a:0", "0:a:1"] {
+        let mut cmd = ffmpeg::command().unwrap();
+        cmd.arg("-i").arg(&dst).args(["-map", lane, "-ac", "1", "-ar", "8000", "-f", "f32le", "pipe:1"]);
+        let output = cmd.output().unwrap();
+        assert!(output.status.success());
+        let samples: Vec<f32> = output.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+        let rms = |start: usize, end: usize| (samples[start..end].iter().map(|v| v * v).sum::<f32>() / (end-start) as f32).sqrt();
+        assert!(rms(400, 1200) < rms(10000, 11000) * 0.4, "fade in on every lane");
+        assert!(rms(22800, 23600) < rms(10000, 11000) * 0.4, "fade out on every lane");
+    }
+}
+
+#[test]
+fn cut_crossfade_shortens_timeline_and_preserves_lanes() {
+    let work = WorkDir::new(&std::env::temp_dir()).unwrap();
+    let src = work.path().join("source.mkv"); fixture(&src);
+    let dst = work.path().join("crossfade.mp4");
+    let edit = EditSpec { segments: vec![(0.0,1.5),(4.5,6.0)], crop: Crop::default(),
+        audio: lanes_core::edit::AudioEffects { crossfade: 0.25, ..Default::default() } };
+    lanes_core::edit::render(&src, &dst, &edit, Some(&MixSpec::default()), &Control { cancel: &AtomicBool::new(false), progress: &|_| {} }).unwrap();
+    assert!((lanes_core::media::duration(&dst).unwrap() - 2.75).abs() < 0.15);
+    assert_eq!(lanes_core::media::audio_track_titles(&dst).unwrap(), ["Mix (all lanes)", "Game", "Voice"]);
+    assert_eq!(edit.markers(&[5.0]), [1.75]);
+    let blend = pixels(&dst, 1.4);
+    assert!(blend[0] > 30 && blend[2] > 30, "transition must blend both retained scenes");
 }

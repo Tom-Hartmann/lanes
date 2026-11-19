@@ -13,8 +13,10 @@ import { SeekBar } from "./SeekBar";
 import { DragHandle, SharePanel } from "./SharePanel";
 import { TrimBar } from "./TrimBar";
 
+import { ClipDetails } from "./ClipDetails";
+import { Waveform } from "./Waveform";
 import { ClipEditor, CropOverlay } from "./ClipEditor";
-import { editHistory, initialHistory, hasCrop, type Segment } from "../../lib/clipEdits";
+import { editHistory, initialHistory, hasCrop, NO_AUDIO, parseDraft, fadeGain, segmentDuration, type Segment } from "../../lib/clipEdits";
 
 interface Props {
   clip: ClipInfo;
@@ -29,7 +31,7 @@ const round1 = (n: number) => Math.round(n * 10) / 10;
 
 const SPEEDS = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2];
 const SPEED_KEY = "lanes.playbackSpeed";
-const FRAME = 1 / 60;
+
 
 function loadSpeed(): number {
   try {
@@ -68,18 +70,36 @@ const isTyping = (t: EventTarget | null) =>
 
 export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
   const video = useRef<HTMLVideoElement>(null);
+  const [frame, setFrame] = useState(1 / 30);
+  const [renderedPreview, setRenderedPreview] = useState<string | null>(null);
+  useEffect(() => { let alive = true; api.clipFrameDuration(clip.path).then((n) => { if (alive && Number.isFinite(n) && n > 0) setFrame(n); }).catch(() => {}); return () => { alive = false; }; }, [clip.path]);
   const [src, setSrc] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [duration, setDuration] = useState(clip.durationSecs ?? 0);
-  const [range, setRange] = useState<[number, number]>([0, clip.durationSecs ?? 0]);
+  const draftKey = `lanes.editDraft.v1:${clip.path.toLowerCase()}:${clip.sizeBytes}:${clip.createdMs}`;
+  const [restored] = useState(() => {
+    try { return parseDraft(localStorage.getItem(draftKey) ?? "null", clip.durationSecs ?? 0); } catch { return null; }
+  });
+  const [draftStatus, setDraftStatus] = useState(restored ? "Draft restored" : "Drafts save automatically on this device");
+  const [range, setRange] = useState<[number, number]>(restored?.range ?? [0, clip.durationSecs ?? 0]);
   const [playhead, setPlayhead] = useState(0);
   const [busy, setBusy] = useState<"save" | "remux" | null>(null);
   const previewEnd = useRef<number | null>(null);
   const previewQueue = useRef<Segment[]>([]);
-  const [history, dispatchEdit] = useReducer(editHistory, undefined, initialHistory);
+  const [history, dispatchEdit] = useReducer(editHistory, undefined, () => ({ ...initialHistory(), ...(restored ? { present: restored.draft } : {}) }));
   const draft = history.present;
   const segments: Segment[] = draft.segments ?? [[0, duration]];
-  const advancedEdit = draft.segments !== null || hasCrop(draft.crop);
+  const rawAudio = draft.audio ?? NO_AUDIO;
+  const editLength = segmentDuration(draft.segments ?? [range]) - (rawAudio.crossfade ?? 0) * Math.max(0, (draft.segments?.length ?? 1) - 1);
+  const audio = { ...rawAudio, fadeIn: Math.min(rawAudio.fadeIn, editLength), fadeOut: Math.min(rawAudio.fadeOut, editLength) };
+  const advancedEdit = draft.segments !== null || hasCrop(draft.crop) || Object.values(audio).some(Boolean);
+  useEffect(() => {
+    if (duration <= 0) return;
+    try {
+      localStorage.setItem(draftKey, JSON.stringify({ version: 1, duration, draft, range }));
+      setDraftStatus(restored ? "Draft restored and saved on this device" : "Draft saved on this device");
+    } catch { setDraftStatus("Draft could not be saved. Export your edit before closing."); }
+  }, [draftKey, draft, range, duration, restored]);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [exportProgress, setExportProgress] = useState<number | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -124,15 +144,16 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
   const [playing, setPlaying] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const player = useRef<HTMLDivElement>(null);
-  const mixer = useLaneMixer(video, src, clip, muted ? 0 : volume);
+  const fadedVolume = volume * fadeGain(playhead, draft.segments ?? [range], audio);
+  const mixer = useLaneMixer(video, src, clip, muted ? 0 : fadedVolume);
 
   // While the lane mix plays, the video itself stays muted (see LaneMixer).
   useEffect(() => {
     const v = video.current;
     if (!v) return;
     v.muted = mixer.ready || muted;
-    v.volume = volume;
-  }, [mixer.ready, muted, volume, src]);
+    v.volume = fadedVolume;
+  }, [mixer.ready, muted, fadedVolume, src]);
 
   // Smooth playhead while playing (timeupdate only fires ~4 times a second).
   useEffect(() => {
@@ -227,10 +248,12 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
   const keys = useRef<(e: KeyboardEvent) => void>(() => {});
   keys.current = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
-      if (help) setHelp(false);
+      if (renderedPreview) setRenderedPreview(null);
+      else if (help) setHelp(false);
       else if (!busy) onClose();
       return;
     }
+    if (renderedPreview) return;
     if (isTyping(e.target) || e.ctrlKey || e.altKey || e.metaKey) return;
     const v = video.current;
     const nudge = (d: number) => {
@@ -273,11 +296,11 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
         break;
       case "frameBack":
         v?.pause();
-        nudge(-FRAME);
+        nudge(-frame);
         break;
       case "frameForward":
         v?.pause();
-        nudge(FRAME);
+        nudge(frame);
         break;
       case "slowMotion": {
         const next = speed === 1 ? slowSpeed : 1;
@@ -344,20 +367,22 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
 
   // A copy with what you see and hear: the selection (lossless) and the audio
   // mix rendered into its first track. The viewer then switches to the copy.
-  const saveCopy = async () => {
+  const saveCopy = async (previewOnly = false) => {
+    video.current?.pause();
     setBusy("save");
     setCancelling(false);
     let unlisten: (() => void) | undefined;
     try {
       let out: string;
-      if (advancedEdit) {
+      if (advancedEdit || previewOnly) {
         const jobId = crypto.randomUUID();
         exportJob.current = jobId;
         unlisten = await events.onClipEditProgress((p) => { if (p.jobId === jobId) setExportProgress(p.fraction); });
-        out = await api.renderClipEdit(clip.path, { segments: draft.segments ?? [[start, end]], crop: draft.crop }, bake, bake ? mixer.payload : null, jobId);
+        out = await api.renderClipEdit(clip.path, { segments: draft.segments ?? [[start, end]], crop: draft.crop, audio }, previewOnly ? mixer.choice : bake, bake ? mixer.payload : null, jobId, previewOnly);
       } else {
         out = await api.saveClipCopy(clip.path, trimmed ? [start, end] : null, bake, bake ? mixer.payload : null);
       }
+      if (previewOnly) { setRenderedPreview(convertFileSrc(out)); return; }
       notify({ kind: "success", title: "Copy saved, now showing it", body: out, action: { label: "Show in folder", run: () => void api.revealClip(out) } });
       onOpenPath(out);
     } catch (err) {
@@ -401,7 +426,7 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
   };
 
   const isMp4 = /\.mp4$/i.test(clip.path);
-  const saveWhat = [draft.segments !== null ? "kept segments" : trimmed && "the selection", hasCrop(draft.crop) && "your crop", mixer.bakeReason === "mix" && "your audio mix", mixer.bakeReason === "track" && "a mixed track for Discord"]
+  const saveWhat = [draft.segments !== null ? "kept segments" : trimmed && "the selection", hasCrop(draft.crop) && "your crop", Object.values(audio).some(Boolean) && "audio effects", mixer.bakeReason === "mix" && "your audio mix", mixer.bakeReason === "track" && "a mixed track for Discord"]
     .filter(Boolean)
     .join(" + ");
 
@@ -503,7 +528,7 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
                   advancePreview(e.currentTarget);
                 }}
               />
-              {hasCrop(draft.crop) && <CropOverlay video={video} crop={draft.crop} />}
+              {dimensions.width > 0 && <CropOverlay video={video} crop={draft.crop} disabled={busy !== null} onChange={(crop) => dispatchEdit({ type: "change", value: { ...draft, crop } })} />}
               </>
             )}
           </div>
@@ -562,6 +587,7 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
           </div>
 
           <LaneMixerPanel mixer={mixer} />
+          <ClipDetails clip={clip} playhead={playhead} onSeek={seek} onChanged={onChanged} />
 
           <div className="space-y-3 p-4">
             <div className="flex items-center gap-2 text-sm text-zinc-300">
@@ -642,6 +668,26 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
               {draft.segments !== null ? "The kept-segment list below defines your export. Use this selection to remove another range." : advancedEdit ? "The selection and crop are exported with precise cuts. Your original stays unchanged." : "A simple trim is lossless and snaps back to a keyframe. Use Cut & crop below for precise cuts and removing sections from the middle."}
             </Callout>
           </div>
+          <div className="flex flex-wrap items-center gap-3 px-4 text-xs text-zinc-300">
+            <p role="status" className="mr-auto">{draftStatus}</p>
+            <Button size="sm" disabled={busy !== null} onClick={() => void attempt("Could not save recipe", async () => {
+              const out = await api.saveEditRecipe(clip.path, { version: 1, duration, draft, range });
+              notify({ kind: "success", title: "Edit recipe saved beside the source clip", body: out });
+            })}>Save edit recipe</Button>
+            <label className="cursor-pointer rounded border border-zinc-600 px-2 py-1">Load edit recipe
+              <input type="file" accept=".json,application/json" disabled={busy !== null} className="block max-w-48 text-xs" aria-label="Load edit recipe" onChange={(e) => {
+                const file = e.currentTarget.files?.[0]; e.currentTarget.value = "";
+                if (!file) return;
+                void attempt("Could not load recipe", async () => {
+                  if (file.size > 65536) throw new Error("Recipe must be smaller than 64 KB");
+                  const saved = parseDraft(await file.text(), duration);
+                  if (!saved) throw new Error("Invalid recipe or source duration does not match this clip");
+                  dispatchEdit({ type: "change", value: saved.draft }); setRange(saved.range);
+                });
+              }} />
+            </label>
+          </div>
+          <Waveform path={clip.path} duration={duration} playhead={playhead} onSeek={seek} onSelect={setRange} />
           <ClipEditor draft={draft} segments={segments} duration={duration} selection={range} playhead={playhead}
             width={dimensions.width} height={dimensions.height} disabled={busy !== null} canUndo={history.past.length > 0} canRedo={history.future.length > 0}
             onChange={(value) => dispatchEdit({ type: "change", value })} onUndo={() => dispatchEdit({ type: "undo" })} onRedo={() => dispatchEdit({ type: "redo" })}
@@ -664,6 +710,10 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
           </div>
           <progress aria-label="Export progress" max={1} value={exportProgress} className="h-2 w-full accent-sky-500" />
         </div>}
+        {renderedPreview && <div role="dialog" aria-modal="true" aria-label="Rendered edit preview" className="fixed inset-4 z-50 flex flex-col rounded border border-zinc-600 bg-zinc-950 p-4">
+          <div className="mb-3 flex items-center justify-between text-sm text-zinc-200"><span>Rendered edit preview ? cuts, crop and audio processing</span><Button size="sm" onClick={() => setRenderedPreview(null)}>Close preview</Button></div>
+          <video controls autoPlay src={renderedPreview} className="min-h-0 flex-1" />
+        </div>}
         <footer className="flex flex-wrap items-center gap-2 border-t border-zinc-800 px-4 py-2.5">
           <Button
             size="sm"
@@ -674,6 +724,7 @@ export function ClipViewer({ clip, onClose, onChanged, onOpenPath }: Props) {
           >
             {busy === "save" ? <Spinner /> : <IconScissors size={14} />} Save copy
           </Button>
+          <Button size="sm" disabled={busy !== null || duration <= 0} onClick={() => void saveCopy(true)}>Render preview</Button>
           {edits && <span className="text-xs text-zinc-500">with {saveWhat}</span>}
           {!isMp4 && (
             <Button size="sm" disabled={busy !== null} onClick={() => void remux()} title="Copy the streams into an MP4 container (no re-encode)">

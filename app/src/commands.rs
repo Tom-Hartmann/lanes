@@ -229,6 +229,75 @@ fn checked_path(state: &AppState, path: &str) -> CmdResult<PathBuf> {
 }
 
 #[tauri::command]
+pub async fn studio_export(app: AppHandle, paths: Vec<String>, preset: lanes_core::studio::Preset, job_id: String, recover: bool, import: bool) -> CmdResult<String> {
+    preset.validate().map_err(err)?;
+    let job = crate::edit_jobs::Job::start(job_id.clone())?;
+    blocking(move || {
+        let state = app.state::<AppState>();
+        if paths.is_empty() || paths.len() > 16 || (import || recover) && paths.len() != 1 { return Err("Choose a valid number of files".into()); }
+        let sources = paths.iter().map(|p| {
+            if import { std::fs::canonicalize(p).map_err(err) } else { checked_path(&state, p) }
+        }).collect::<CmdResult<Vec<_>>>()?;
+        if let Some(status) = state.status()
+            && let lanes_core::engine::RecordingState::Recording { files, .. } = status.recording
+            && sources.iter().any(|p| files.iter().any(|f| std::fs::canonicalize(p).ok().zip(std::fs::canonicalize(f).ok()).is_some_and(|(a,b)| a == b))) {
+                return Err("Stop recording before processing that file".into());
+            }
+        let folder = PathBuf::from(state.settings().output.folder);
+        std::fs::create_dir_all(&folder).map_err(err)?;
+        let name = if recover { "Recovered" } else if import { "Imported" } else { "Compilation" };
+        let out = naming::unique_path(&folder, name, if recover { "mkv" } else { preset.format.as_str() }).map_err(err)?;
+        let progress = |fraction: f64| { let _ = app.emit("clip_edit_progress", serde_json::json!({"jobId": job_id, "fraction": fraction})); };
+        progress(0.0);
+        let control = lanes_core::ffmpeg::Control { cancel: &job.cancelled, progress: &progress };
+        if recover { lanes_core::studio::recover(&sources[0], &out, &control).map_err(err)?; }
+        else { lanes_core::studio::compile(&sources, &out, &preset, &control).map_err(err)?; }
+        state.library.add_saved(&out, library::Kind::Clip, "", &[]);
+        Ok(out.to_string_lossy().into_owned())
+    }).await
+}
+
+#[tauri::command]
+pub async fn set_clip_details(app: AppHandle, path: String, details: library::Details) -> CmdResult<()> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let path = checked_path(&state, &path)?;
+        let duration = lanes_core::media::duration(&path).unwrap_or(0.0);
+        if details.tags.len() > 32 || details.tags.iter().any(|t| t.len() > 80) || details.notes.len() > 4000
+            || details.bookmarks.len() > 200 || details.bookmarks.iter().any(|b| !b.time.is_finite() || b.time < 0.0 || b.time > duration || b.label.len() > 120) {
+            return Err("Metadata exceeds the supported limits".into());
+        }
+        state.library.set_details(&path, details).map_err(err)
+    }).await
+}
+
+#[tauri::command]
+pub async fn cleanup_library(app: AppHandle, older_days: u32, max_gb: u32, apply: bool) -> CmdResult<Vec<ClipInfo>> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        if crate::edit_jobs::active() { return Err("Wait for exports and editing jobs before cleaning the library".into()); }
+        if !(7..=3650).contains(&older_days) || max_gb == 0 || max_gb > 100000 { return Err("Use an age of 7–3650 days and a positive storage limit".into()); }
+        if state.status().is_none_or(|s| !matches!(s.recording, lanes_core::engine::RecordingState::Idle) || s.replay.active) {
+            return Err("Stop recording and replay before cleaning the library".into());
+        }
+        let mut folders = state.library_folders();
+        folders.retain(|p| p != &state::playback_cache_dir());
+        let clips = state.library.list(&folders);
+        let cutoff = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(err)?.as_millis() as u64)
+            .saturating_sub(u64::from(older_days) * 86400000);
+        let candidates = library::cleanup_candidates(clips, cutoff, u64::from(max_gb) * 1_000_000_000);
+        if apply {
+            for clip in &candidates {
+                let p = checked_path(&state, &clip.path)?;
+                recycle(&p)?;
+                state.library.remove(&p);
+            }
+        }
+        Ok(candidates)
+    }).await
+}
+
+#[tauri::command]
 pub async fn list_clips(app: AppHandle) -> CmdResult<Vec<ClipInfo>> {
     blocking(move || {
         let state = app.state::<AppState>();
@@ -240,12 +309,45 @@ pub async fn list_clips(app: AppHandle) -> CmdResult<Vec<ClipInfo>> {
 }
 
 #[tauri::command]
+pub async fn install_speech(app: AppHandle) -> CmdResult<()> {
+    if app.state::<AppState>().elevated { return Err("Local speech setup requires standard-user mode. Restart Lanes without administrator privileges.".into()); }
+    blocking(|| {
+        use std::os::windows::process::CommandExt;
+        let mut command = std::process::Command::new("powershell.exe");
+        command.creation_flags(0x0800_0000).args(["-NoProfile", "-NonInteractive", "-Command", include_str!("../../scripts/setup-speech.ps1")]);
+        lanes_core::ffmpeg::run_worker(command, None, 1.0).map_err(err)
+    }).await
+}
+
+#[tauri::command]
+pub async fn caption_clip(app: AppHandle, path: String, job_id: String) -> CmdResult<String> {
+    // The optional engine is user-writable. Never execute it elevated.
+    if app.state::<AppState>().elevated { return Err("Local captions require standard-user mode. Restart Lanes without administrator privileges.".into()); }
+    let job = crate::edit_jobs::Job::start(job_id.clone())?;
+    blocking(move || {
+        let p = checked_path(&app.state::<AppState>(), &path)?;
+        let out = naming::unique_path(p.parent().ok_or("missing parent")?, &p.file_stem().unwrap_or_default().to_string_lossy(), "srt").map_err(err)?;
+        let progress = |fraction| { let _ = app.emit("clip_edit_progress", serde_json::json!({"jobId": job_id, "fraction": fraction})); };
+        progress(0.0);
+        let speech = state::local_data_dir().join("speech");
+        lanes_core::captions::transcribe(&p, &out, &speech.join("whisper-cli.exe"), &speech.join("ggml-tiny.bin"),
+            &lanes_core::ffmpeg::Control { cancel: &job.cancelled, progress: &progress }).map_err(err)?;
+        Ok(out.to_string_lossy().into_owned())
+    }).await
+}
+
+#[tauri::command]
 pub async fn get_clip_thumbnail(app: AppHandle, path: String) -> CmdResult<String> {
     blocking(move || {
         let p = checked_path(&app.state::<AppState>(), &path)?;
         lanes_core::media::thumbnail(&p, 320).map_err(err)
     })
     .await
+}
+
+#[tauri::command]
+pub async fn clip_frame_duration(app: AppHandle, path: String) -> CmdResult<f64> {
+    blocking(move || lanes_core::media::frame_duration(&checked_path(&app.state::<AppState>(), &path)?).map_err(err)).await
 }
 
 /// MP4 plays directly in WebView2; MKV is remuxed once into a cache folder.
@@ -383,26 +485,61 @@ pub async fn save_clip_copy(
 pub async fn render_clip_edit(
     app: AppHandle, path: String, edit: lanes_core::edit::EditSpec,
     mix: Option<lanes_core::share::MixSpec>, viewer_mix: Option<serde_json::Value>, job_id: String,
+    preview: Option<bool>,
 ) -> CmdResult<String> {
     let job = crate::edit_jobs::Job::start(job_id.clone())?;
     blocking(move || {
         let state = app.state::<AppState>();
         let source = checked_path(&state, &path)?;
-        let out = naming::unique_path(source.parent().ok_or("missing clip directory")?,
+        let preview = preview.unwrap_or(false);
+        let cache = state::playback_cache_dir();
+        if preview { std::fs::create_dir_all(&cache).map_err(err)?; }
+        let out = naming::unique_path(if preview { &cache } else { source.parent().ok_or("missing clip directory")? },
             &format!("{}_edit", source.file_stem().unwrap_or_default().to_string_lossy()), "mp4").map_err(err)?;
         let progress = |fraction: f64| { let _ = app.emit("clip_edit_progress", serde_json::json!({ "jobId": job_id, "fraction": fraction })); };
         progress(0.0); // Job is registered before the UI enables cancellation.
         lanes_core::edit::render(&source, &out, &edit, mix.as_ref(), &lanes_core::ffmpeg::Control {
             cancel: &job.cancelled, progress: &progress,
         }).map_err(err)?;
-        state.library.add_edit(&source, &out, &edit).map_err(|e| format!("Copy saved to {}, but its metadata could not be saved: {e}", out.display()))?;
-        if mix.is_some() { state.library.set_baked_mix(&out, viewer_mix).map_err(err)?; }
+        if !preview {
+            state.library.add_edit(&source, &out, &edit).map_err(|e| format!("Copy saved to {}, but its metadata could not be saved: {e}", out.display()))?;
+            if mix.is_some() { state.library.set_baked_mix(&out, viewer_mix).map_err(err)?; }
+        }
         Ok(out.to_string_lossy().into_owned())
     }).await
 }
 
 #[tauri::command]
 pub fn cancel_clip_edit(job_id: String) { crate::edit_jobs::cancel(&job_id); }
+
+#[tauri::command]
+pub async fn save_edit_recipe(app: AppHandle, path: String, recipe: serde_json::Value) -> CmdResult<String> {
+    blocking(move || {
+        let p = checked_path(&app.state::<AppState>(), &path)?;
+        let bytes = serde_json::to_vec_pretty(&recipe).map_err(err)?;
+        if bytes.len() > 65536 { return Err("Edit recipe is too large".into()); }
+        let name = format!("{}_edit", p.file_stem().unwrap_or_default().to_string_lossy());
+        let out = lanes_core::engine::naming::unique_path(p.parent().ok_or("missing clip directory")?, &name, "json").map_err(err)?;
+        lanes_core::files::atomic_write(&out, &bytes).map_err(err)?;
+        Ok(out.to_string_lossy().into_owned())
+    }).await
+}
+
+#[tauri::command]
+pub async fn clip_waveform(app: AppHandle, path: String) -> CmdResult<Vec<f32>> {
+    blocking(move || {
+        let p = checked_path(&app.state::<AppState>(), &path)?;
+        let _guard = crate::playback::WRITER.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = state::playback_cache_dir();
+        let key = crate::playback::key(&p).map_err(err)?;
+        let out = cache.join(format!("{key}_wave.json"));
+        if let Ok(bytes) = std::fs::read(&out)
+            && let Ok(peaks) = serde_json::from_slice::<Vec<f32>>(&bytes) { return Ok(peaks); }
+        let peaks = lanes_core::waveform::peaks(&p).map_err(err)?;
+        lanes_core::files::atomic_write(&out, &serde_json::to_vec(&peaks).map_err(err)?).map_err(err)?;
+        Ok(peaks)
+    }).await
+}
 
 /// Audio track names of a clip (lane names), for choosing what to share.
 #[tauri::command]

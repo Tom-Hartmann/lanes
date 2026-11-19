@@ -74,9 +74,24 @@ start with a track of all lanes mixed, so Discord, browsers and phones play ever
 - Cut & crop: split at the playhead, remove middle sections, or keep/remove a selected range; the kept segments are joined into a new MP4
 - Crop all four edges with a live guide, including square and portrait presets; undo/redo edits and preview the kept sequence before saving
 - Precise edits preserve separate audio lanes and remap bookmarks; exports show progress and can be cancelled without changing the original
+- Edit drafts automatically persist on this device and restore cuts, crop, trim and audio effects. Save/load a JSON edit recipe to back up or transfer edits to a matching source clip.
+- Reorder segments with Earlier/Later, zoom the source timeline, and drag crop-edge handles (or enter exact percentages).
+- Cached first-lane audio waveforms support seeking and quiet-section suggestions. Suggestions require review; they never delete footage automatically.
+- Fade in/out the joined result, optionally normalize loudness to -16 LUFS or reduce steady noise. Effects apply to every exported audio lane. Fades preview in the editor; normalization/noise reduction are heard in the exported copy.
 - Share: one-click copy with your audio mix in one track and sized for Discord; drag it out, copy it (Ctrl+V in Discord) or send it to a Discord channel via webhook
 - Drag a clip straight from the library or the viewer into Discord, a chat or a folder
 - Select several clips (or all) and delete them to the recycle bin, or show a file in its folder
+- Export studio: import external video copies by path, combine up to 16 clips in a chosen order, or queue separate exports. MP4/MKV, resolution, FPS, quality, transitions and MP4 size limits are reusable presets.
+- Sequential queue with progress, cancellation, retry and persisted history. Closing the window interrupts UI queue scheduling; interrupted jobs are never automatically duplicated on restart.
+- Crossfade audio at cuts with a matching video dissolve, preserving separate lanes for single-source edits. Compilations use each source's first audio track; save a custom mix before compiling if needed.
+- Render preview shows the actual cuts, crop and processed audio before publishing a copy. Frame stepping uses the source's nominal frame rate (variable-rate imported footage can differ).
+- Local automatic captions via optional [whisper.cpp](https://github.com/ggml-org/whisper.cpp): install the pinned, checksum-verified engine/model from Export studio, then queue an editable SRT. Audio is never uploaded. Review recognition results before sharing.
+- Speech setup/transcription require standard-user mode: the optional engine is stored under your user account and is never executed with administrator privileges.
+- Favorites, tags, notes and named bookmarks; search includes metadata, with date and minimum-duration filters. Named bookmarks follow edited timelines.
+- Storage cleanup previews oldest eligible files, protects favorites/recent files, and uses the recycle bin. Optional repetition runs every ten minutes while the library page is open. Cleanup pauses during capture or export jobs.
+- Recording health notices for low space, encoder overload and prolonged microphone silence. Existing disk guard settings still control automatic stopping.
+- Recover readable packets from stopped/interrupted recordings into a new MKV. Recovery cannot recreate unwritten footage or repair all damaged formats.
+
 
 ### Hotkeys
 - Global hotkeys that work while a game has focus

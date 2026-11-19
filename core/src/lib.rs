@@ -25,6 +25,9 @@ pub mod replay;
 pub mod share;
 pub mod sysinfo;
 pub mod util;
+pub mod waveform;
+pub mod studio;
+pub mod captions;
 
 pub use clock::Timestamp;
 pub use error::{Error, Result};

@@ -50,6 +50,34 @@ with sync_playwright() as p:
     assert args["edit"]["segments"] == [[0, 3], [7, 10]], args
     assert abs(args["edit"]["crop"]["left"] - 0.341796875) < 1e-9
 
+    # Persisted cuts and crop survive destroying/recreating the viewer.
+    page.reload()
+    page.wait_for_load_state("networkidle")
+    expect(page.get_by_text("Draft restored and saved on this device", exact=True)).to_be_visible()
+    expect(page.get_by_label("Left (%)")).to_have_value("34.18")
+    expect(page.get_by_role("button", name="Remove segment 2", exact=True)).to_have_count(1)
+    page.get_by_label("Fade in seconds", exact=True).fill("0.5")
+    page.get_by_label("Fade out seconds", exact=True).fill("0.7")
+    page.get_by_role("button", name="Move segment 2 earlier", exact=True).click()
+    page.get_by_label("Cut crossfade", exact=True).select_option("0.25")
+    page.get_by_role("button", name="Save copy", exact=True).click()
+    page.wait_for_function("window.__editorTest.opened === 'edited.mp4'")
+    args = page.evaluate("window.__editorTest.calls.find(c => c.cmd === 'render_clip_edit').args")
+    assert args["edit"]["segments"] == [[7, 10], [0, 3]]
+    assert args["edit"]["audio"]["fadeIn"] == .5
+    assert args["edit"]["audio"]["fadeOut"] == .7
+    assert args["edit"]["audio"]["crossfade"] == .25
+    page.get_by_role("button", name="Reset edits", exact=True).click()
+    handle = page.get_by_role("button", name="Drag left crop edge", exact=True)
+    handle.scroll_into_view_if_needed()
+    box = handle.bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["width"] / 2 + 25, box["y"] + box["height"] / 2)
+    page.mouse.up()
+    assert float(page.get_by_label("Left (%)").input_value()) > 0
+    page.get_by_role("button", name="Reset edits", exact=True).click()
+
     # Regression: a programmatic seek must not cancel selection preview.
     page.reload()
     page.wait_for_load_state("networkidle")
@@ -77,6 +105,14 @@ with sync_playwright() as p:
     page.get_by_label("Left (%)").scroll_into_view_if_needed()
     page.screenshot(path=str(output / "editor-compact.png"))
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.goto(url)
+    page.wait_for_load_state("networkidle")
+    page.get_by_role("button", name="Render preview", exact=True).click()
+    expect(page.get_by_role("dialog", name="Rendered edit preview")).to_be_visible()
+    page.get_by_role("dialog").locator("video").evaluate("v => v.pause()")
+    assert page.evaluate("window.__editorTest.calls.some(c => c.cmd === 'render_clip_edit' && c.args.preview)")
+    page.get_by_role("button", name="Close preview", exact=True).click()
+    expect(page.get_by_role("dialog", name="Rendered edit preview")).to_have_count(0)
     assert not errors, errors
     browser.close()
-    print("PASS: split/remove, undo/redo, crop, export payload, preview sequence, selection preview, cancellation, compact layout")
+    print("PASS: split/remove, undo/redo, crop, export payload, preview sequence, selection preview, cancellation, draft recovery, fades, reordering, crop dragging, compact layout")

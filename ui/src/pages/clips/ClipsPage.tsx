@@ -5,6 +5,7 @@ import { formatBytes } from "../../lib/format";
 import { api, type ClipInfo } from "../../lib/ipc";
 import { attempt, notify, reportError } from "../../store/noticeStore";
 import { useStatusStore } from "../../store/statusStore";
+import { StudioPanel } from "./StudioPanel";
 import { ClipCard } from "./ClipCard";
 import { ClipViewer } from "./ClipViewer";
 
@@ -24,6 +25,9 @@ export function ClipsPage() {
   const [clips, setClips] = useState<ClipInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
+  const [favorites, setFavorites] = useState(false);
+  const [dateFrom, setDateFrom] = useState("");
+  const [minDuration, setMinDuration] = useState(0);
   const [query, setQuery] = useState("");
   const [game, setGame] = useState<string | null>(null);
   const [sort, setSort] = useState<Sort>("newest");
@@ -66,10 +70,11 @@ export function ClipsPage() {
         (c) =>
           (filter === "all" || c.kind === filter) &&
           (game === null || (c.game || OTHER) === game) &&
-          (q === "" || c.fileName.toLowerCase().includes(q) || c.game.toLowerCase().includes(q)),
+          (!favorites || c.details?.favorite) && (!dateFrom || c.createdMs >= new Date(dateFrom).getTime()) && (c.durationSecs ?? 0) >= minDuration &&
+          (q === "" || [c.fileName, c.game, c.details?.notes ?? "", ...(c.details?.tags ?? []), ...(c.details?.bookmarks.map((b) => b.label) ?? [])].join(" ").toLowerCase().includes(q)),
       )
       .sort(SORTS[sort]);
-  }, [clips, filter, query, game, sort]);
+  }, [clips, filter, query, game, sort, favorites, dateFrom, minDuration]);
 
   useEffect(() => {
     if (!pendingOpen || !clips) return;
@@ -176,6 +181,12 @@ export function ClipsPage() {
           ]}
         />
       </div>
+      <div className="flex flex-wrap gap-3 text-xs text-zinc-300">
+        <label><input type="checkbox" checked={favorites} onChange={(e) => setFavorites(e.target.checked)} /> Favorites only</label>
+        <label>From date <input aria-label="Clip date from" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="rounded bg-zinc-800 p-1" /></label>
+        <label>Minimum seconds <input aria-label="Minimum clip duration" type="number" min={0} value={minDuration} onChange={(e) => setMinDuration(Math.max(0, Number(e.target.value)))} className="w-20 rounded bg-zinc-800 p-1" /></label>
+      </div>
+      <StudioPanel selected={picked} onChanged={load} />
       {games.length > 1 && (
         <div className="flex flex-wrap gap-1.5">
           {[[null, clips?.length ?? 0] as const, ...games].map(([g, n]) => (

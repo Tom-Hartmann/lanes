@@ -29,3 +29,5 @@ pub fn cancel(id: &str) {
         token.store(true, Ordering::Relaxed);
     }
 }
+
+pub fn active() -> bool { !jobs().lock().unwrap_or_else(|e| e.into_inner()).is_empty() }

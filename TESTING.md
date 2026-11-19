@@ -187,3 +187,20 @@ disk guard, crash safety, a 5-minute recording, clips library playback and remux
 - [ ] PresentMon frame time with and without Lanes in a real game (`docs/PERFORMANCE.md`)
 - [ ] CPU / RAM while recording at 1440p and 4K
 - [x] UI closed: no WebView2 processes left (Task Manager)
+
+## Editor draft and audio regression coverage
+
+`pnpm --filter lanes-ui test` covers malformed/stale draft rejection, reordered fade timing, and quiet-section suggestions in addition to cut/crop history.
+The browser harness checks draft restoration after reload, segment reordering and fade export arguments. Native commands are mocked in that harness.
+`cargo test -p lanes-core --test edit_export` uses synthetic media to verify waveform bounds, reordered video, and the decoded fade envelope on every audio lane with normalization and denoising enabled.
+
+CI previously relocated test executables away from the media worker. Debug builds now allow the build-time FFmpeg SDK as a fallback; release builds still require the adjacent bundled worker. A relocated core test executable with DLLs but no adjacent `ffmpeg.exe` should pass `share::tests::edited_copy_renders_the_mix_from_the_lanes --exact`.
+
+## Export studio and library regressions
+
+- `cargo test --workspace`: mixed-resolution/audio-less compilation, dissolve/crossfade duration, MP4 size limits, MKV output, cancellation, truncated-MKV recovery, metadata persistence/remapping, and cleanup favorite/age protection.
+- `cargo test -p lanes-core --test studio_export local_captions_transcribe_real_speech -- --ignored`: opt-in local speech integration, with `LANES_SPEECH_FIXTURE` pointing to upstream whisper.cpp's `samples/jfk.wav` and `scripts/setup-speech.ps1` installed. This test is separate from CI's offline suite.
+- `target/ui-test-env/Scripts/python.exe ui/tests/studio_browser.py http://127.0.0.1:5179`: browser regression for ordering, presets, queue/import/recovery/caption IPC, cleanup preview, metadata and persistence. IPC is mocked; Rust tests validate actual media output.
+- The editor browser test also verifies cut-crossfade arguments and the rendered-preview dialog.
+- Recording-health microphone/device detection still needs a live recording check on the intended hardware; automated tests do not simulate real Windows audio devices.
+- Native Windows smoke test (2026-11-19, standard user): imported a synthetic clip through the export studio, played it, cropped the left edge, rendered the preview, and saved an edited copy. FFprobe confirmed the resulting 1132 x 720 video and 10-second duration. This exercised the real backend rather than mocked IPC.

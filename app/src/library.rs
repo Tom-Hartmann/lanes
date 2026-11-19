@@ -20,6 +20,8 @@ pub enum Kind {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Entry {
+    #[serde(default)]
+    details: Details,
     kind: Kind,
     duration: Option<f64>,
     size: u64,
@@ -39,7 +41,7 @@ struct Entry {
 
 impl Entry {
     fn new(kind: Kind) -> Self {
-        Self { kind, duration: None, size: 0, game: None, markers: Vec::new(), mix: None, mix_baked: None }
+        Self { details: Details::default(), kind, duration: None, size: 0, game: None, markers: Vec::new(), mix: None, mix_baked: None }
     }
 }
 
@@ -62,6 +64,7 @@ fn game_from_name(stem: &str) -> Option<String> {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipInfo {
+    pub details: Details,
     pub path: String,
     pub file_name: String,
     pub size_bytes: u64,
@@ -74,6 +77,12 @@ pub struct ClipInfo {
     pub mix: Option<serde_json::Value>,
     pub mix_baked: Option<serde_json::Value>,
 }
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Details { pub favorite: bool, pub tags: Vec<String>, pub notes: String, pub bookmarks: Vec<Bookmark> }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Bookmark { pub time: f64, pub label: String }
 
 pub struct Library {
     path: PathBuf,
@@ -138,6 +147,7 @@ impl Library {
                 .map(|e| e.markers.iter().filter(|&&m| m >= start && m <= end).map(|m| m - start).collect())
                 .unwrap_or_default(),
             mix: from.as_ref().and_then(|e| e.mix.clone()),
+            details: from.as_ref().map(|e| { let mut d = e.details.clone(); d.bookmarks = d.bookmarks.into_iter().filter(|b| b.time >= start && b.time < end).map(|mut b| { b.time -= start; b }).collect(); d }).unwrap_or_default(),
             mix_baked: from.and_then(|e| e.mix_baked),
             ..Entry::new(kind)
         };
@@ -155,6 +165,7 @@ impl Library {
             game: from.as_ref().and_then(|e| e.game.clone()),
             markers: from.as_ref().map_or_else(Vec::new, |e| edit.markers(&e.markers)),
             mix: from.as_ref().and_then(|e| e.mix.clone()),
+            details: from.as_ref().map(|e| { let mut d = e.details.clone(); d.bookmarks = d.bookmarks.iter().flat_map(|b| edit.markers(&[b.time]).into_iter().map(|time| Bookmark { time, label: b.label.clone() })).collect(); d.bookmarks.sort_by(|a,b| a.time.total_cmp(&b.time)); d }).unwrap_or_default(),
             mix_baked: from.and_then(|e| e.mix_baked),
             ..Entry::new(Kind::Clip)
         };
@@ -176,6 +187,12 @@ impl Library {
         let entry = index.entry(key(path)).or_insert_with(|| Entry::new(Kind::Clip));
         entry.mix = mix.clone();
         entry.mix_baked = mix;
+        self.save(&index)
+    }
+
+    pub fn set_details(&self, path: &Path, details: Details) -> std::io::Result<()> {
+        let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+        index.entry(key(path)).or_insert_with(|| Entry::new(Kind::Recording)).details = details;
         self.save(&index)
     }
 
@@ -217,6 +234,7 @@ impl Library {
                     dirty = true;
                 }
                 out.push(ClipInfo {
+                    details: entry.details.clone(),
                     path: path.to_string_lossy().into_owned(),
                     file_name: e.file_name().to_string_lossy().into_owned(),
                     size_bytes: meta.len(),
@@ -240,6 +258,20 @@ impl Library {
         out.sort_by_key(|c| std::cmp::Reverse(c.created_ms));
         out
     }
+}
+
+/// Oldest eligible files only; protected/recent files still count toward usage.
+pub fn cleanup_candidates(mut clips: Vec<ClipInfo>, cutoff: u64, max_bytes: u64) -> Vec<ClipInfo> {
+    let mut bytes: u64 = clips.iter().map(|c| c.size_bytes).sum();
+    clips.sort_by_key(|c| c.created_ms);
+    let mut candidates = Vec::new();
+    for clip in clips {
+        if bytes <= max_bytes { break; }
+        if clip.details.favorite || clip.created_ms >= cutoff { continue; }
+        bytes = bytes.saturating_sub(clip.size_bytes);
+        candidates.push(clip);
+    }
+    candidates
 }
 
 /// True if `path` is a file inside one of `roots` (after resolving `..` and
@@ -285,6 +317,36 @@ mod tests {
         assert!(is_within(&dir.join("a.mp4"), std::slice::from_ref(&dir)));
         assert!(!is_within(&dir.join("..").join("x.mp4"), std::slice::from_ref(&dir)));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cleanup_protects_favorites_and_recent_files() {
+        let make = |name: &str, created_ms, favorite| ClipInfo {
+            path: name.into(), file_name: name.into(), size_bytes: 100, created_ms,
+            duration_secs: Some(1.0), kind: Kind::Clip, game: String::new(), markers: vec![], mix: None, mix_baked: None,
+            details: Details { favorite, ..Default::default() },
+        };
+        let clips = vec![make("favorite", 0, true), make("old", 1, false), make("recent", 100, false), make("second", 2, false)];
+        let selected = cleanup_candidates(clips.clone(), 50, 300);
+        assert_eq!(selected.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["old"]);
+        let selected = cleanup_candidates(clips, 50, 0);
+        assert_eq!(selected.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["old", "second"]);
+    }
+
+    #[test]
+    fn metadata_survives_reload_and_named_bookmarks_follow_edits() {
+        let dir = lanes_core::files::WorkDir::new(&std::env::temp_dir()).unwrap();
+        let source = dir.path().join("source.mkv");
+        let dest = dir.path().join("edit.mkv");
+        fs::write(&dest, []).unwrap();
+        let lib = Library::load(dir.path());
+        lib.set_details(&source, Details { favorite: true, tags: vec!["highlight".into()], notes: "notes".into(), bookmarks: vec![Bookmark { time: 6.0, label: "win".into() }] }).unwrap();
+        let lib = Library::load(dir.path());
+        lib.add_edit(&source, &dest, &lanes_core::edit::EditSpec { segments: vec![(5.0,7.0),(0.0,2.0)], crop: Default::default(), audio: Default::default() }).unwrap();
+        let index = lib.index.lock().unwrap();
+        let details = &index[&key(&dest)].details;
+        assert!(details.favorite); assert_eq!(details.tags, ["highlight"]);
+        assert_eq!(details.bookmarks[0].time, 1.0); assert_eq!(details.bookmarks[0].label, "win");
     }
 
     #[test]

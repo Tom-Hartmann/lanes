@@ -13,6 +13,15 @@ use crate::error::{Error, Result, av_check};
 /// An opened input file.
 pub(crate) struct Input(pub(crate) *mut ffi::AVFormatContext);
 
+pub fn frame_duration(path: &Path) -> Result<f64> {
+    let input = Input::open(path)?;
+    let index = input.video_stream().ok_or_else(|| Error::Invalid("No video stream".into()))?;
+    // SAFETY: the stream is owned by the live input.
+    let rate = unsafe { (*input.streams()[index]).avg_frame_rate };
+    if rate.num <= 0 || rate.den <= 0 { return Ok(1.0 / 30.0); }
+    Ok((f64::from(rate.den) / f64::from(rate.num)).clamp(1.0 / 1000.0, 1.0))
+}
+
 impl Input {
     pub(crate) fn open(path: &Path) -> Result<Self> {
         let cpath = cstr(&path.to_string_lossy());

@@ -10,6 +10,7 @@ import {
   IconUsers,
 } from "./components/icons";
 import { Toasts } from "./components/Toasts";
+import { RecordingHealth } from "./components/RecordingHealth";
 import { cx } from "./components/ui";
 import { formatSecs } from "./lib/format";
 import { api, events } from "./lib/ipc";
@@ -160,6 +161,7 @@ export default function App() {
       </nav>
       <main className="@container min-w-0 flex-1 overflow-y-auto">
         <PendingRestart />
+        <RecordingHealth />
         {(loadError || saveError) && (
           <div className="sticky top-0 z-20 flex items-center gap-3 border-b border-red-900/60 bg-red-950/90 px-6 py-2 text-xs text-red-200 backdrop-blur">
             <span className="min-w-0 flex-1 break-words select-text">

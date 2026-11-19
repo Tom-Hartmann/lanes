@@ -1,0 +1,67 @@
+"""Studio UI regression with mocked IPC; native output is covered by Rust tests."""
+import sys
+from pathlib import Path
+from playwright.sync_api import sync_playwright, expect
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(channel="msedge", headless=True)
+    page = browser.new_page(viewport={"width": 1100, "height": 900})
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(sys.argv[1] + "/tests/studio.html")
+    page.get_by_text("Export studio, import & storage", exact=False).click()
+    page.get_by_role("button", name="Earlier", exact=True).nth(1).click()
+    page.get_by_label("Crossfade duration").select_option("0.25")
+    page.get_by_label("Export resolution").select_option("1920x1080")
+    page.get_by_label("Export size limit").select_option("25")
+    page.get_by_label("Preset name").fill("Sharing")
+    page.get_by_role("button", name="Save preset", exact=True).click()
+    page.get_by_role("button", name="Queue compilation", exact=True).click()
+    page.wait_for_function("window.__studioTest.calls.some(c => c.cmd === 'studio_export')")
+    args = page.evaluate("window.__studioTest.calls.find(c => c.cmd === 'studio_export').args")
+    assert args["paths"] == ["second.mp4", "first.mp4"]
+    assert args["preset"]["crossfade"] == .25 and args["preset"]["maxMb"] == 25
+    page.get_by_role("button", name="Queue separate exports", exact=True).click()
+    page.wait_for_function("window.__studioTest.calls.filter(c => c.cmd === 'studio_export').length === 3")
+    page.get_by_label("Import video path").fill("C:\\Videos\\external.mp4")
+    page.get_by_role("button", name="Import copy", exact=True).click()
+    page.wait_for_function("window.__studioTest.calls.some(c => c.cmd === 'studio_export' && c.args.import)")
+    page.get_by_role("button", name="Select first only").click()
+    page.get_by_role("button", name="Queue captions").click()
+    page.wait_for_function("window.__studioTest.calls.some(c => c.cmd === 'caption_clip')")
+    page.get_by_role("button", name="Recover selected recording").click()
+    page.wait_for_function("window.__studioTest.calls.some(c => c.cmd === 'studio_export' && c.args.recover)")
+    page.get_by_role("button", name="Preview cleanup").click()
+    page.wait_for_function("window.__studioTest.calls.some(c => c.cmd === 'cleanup_library' && !c.args.apply)")
+    expect(page.get_by_role("button", name="Recycle eligible files")).to_be_disabled()
+    page.get_by_text("Tags, favorites & named bookmarks", exact=True).click()
+    page.get_by_label("Favorite", exact=False).check()
+    page.get_by_label("Clip tags").fill("highlight, win")
+    page.get_by_label("Clip notes").fill("Useful moment")
+    page.get_by_label("Bookmark label").fill("Winning shot")
+    page.get_by_role("button", name="Mark 1.25 s").click()
+    page.get_by_role("button", name="Save details").click()
+    page.wait_for_function("window.__studioTest.calls.some(c => c.cmd === 'set_clip_details')")
+    details = page.evaluate("window.__studioTest.calls.find(c => c.cmd === 'set_clip_details').args.details")
+    assert details["favorite"] and details["tags"] == ["highlight", "win"]
+    assert details["bookmarks"] == [{"time": 1.25, "label": "Winning shot"}]
+    page.wait_for_function("window.__studioTest.active === 0")
+    page.evaluate("window.__studioTest.failNext = true")
+    page.get_by_role("button", name="Queue compilation", exact=True).click()
+    expect(page.get_by_text("Fixture export failure", exact=True)).to_be_visible()
+    page.get_by_role("button", name="Retry", exact=True).click()
+    page.wait_for_function("window.__studioTest.active === 0")
+    page.evaluate("window.__studioTest.slowNext = true")
+    page.get_by_role("button", name="Queue compilation", exact=True).click()
+    expect(page.get_by_role("button", name="Cancel", exact=True)).to_be_enabled()
+    page.get_by_role("button", name="Cancel", exact=True).click()
+    expect(page.get_by_text("Export cancelled", exact=True)).to_be_visible()
+    page.reload()
+    page.get_by_text("Export studio, import & storage", exact=False).click()
+    expect(page.get_by_role("button", name="Sharing", exact=True)).to_be_visible()
+    page.set_viewport_size({"width": 820, "height": 520})
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(Path(__file__).resolve().parents[2] / "target/studio.png"))
+    assert not errors, errors
+    browser.close()
+    print("PASS: compilation ordering, sequential queue, presets, import, recovery, captions, cleanup preview, metadata, persistence, compact layout")

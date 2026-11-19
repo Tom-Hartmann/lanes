@@ -10,7 +10,16 @@ pub struct Control<'a> {
 
 pub fn executable() -> Result<PathBuf> {
     let path = std::env::current_exe()?.parent().ok_or_else(|| Error::Invalid("missing application directory".into()))?.join("ffmpeg.exe");
-    if !path.is_file() { return Err(Error::Unsupported("The bundled media worker is missing. Reinstall Lanes.".into())); }
+    if !path.is_file() {
+        // Cargo may relocate test binaries outside target/<profile>/deps.
+        // Only development builds may use the build-time SDK location.
+        #[cfg(debug_assertions)]
+        if let Some(sdk) = option_env!("FFMPEG_DIR") {
+            let worker = PathBuf::from(sdk).join("bin/ffmpeg.exe");
+            if worker.is_file() { return Ok(worker); }
+        }
+        return Err(Error::Unsupported("The bundled media worker is missing. Reinstall Lanes.".into()));
+    }
     Ok(path)
 }
 
@@ -22,8 +31,13 @@ pub fn command() -> Result<Command> {
 }
 
 pub fn run(mut cmd: Command, control: Option<&Control<'_>>, duration: f64) -> Result<()> {
+    cmd.args(["-progress", "pipe:1", "-nostats"]);
+    run_worker(cmd, control, duration)
+}
+
+pub fn run_worker(mut cmd: Command, control: Option<&Control<'_>>, duration: f64) -> Result<()> {
     if control.is_some_and(|c| c.cancel.load(Ordering::Relaxed)) { return Err(Error::Invalid("Export cancelled".into())); }
-    cmd.args(["-progress", "pipe:1", "-nostats"]).stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
     let mut child = cmd.spawn()?;
     let stdout = child.stdout.take().expect("piped stdout");
     let mut stderr = child.stderr.take().expect("piped stderr");

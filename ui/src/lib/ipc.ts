@@ -306,7 +306,10 @@ export interface ShareResult {
   reencoded: boolean;
 }
 
+export interface ClipDetails { favorite: boolean; tags: string[]; notes: string; bookmarks: { time: number; label: string }[] }
+export interface ExportPreset { format: "mp4" | "mkv"; maxMb: number; width: number; height: number; fps: number; crf: number; crossfade: number }
 export interface ClipInfo {
+  details?: ClipDetails;
   path: string;
   fileName: string;
   sizeBytes: number;
@@ -422,6 +425,11 @@ export const api = {
   listAudioApps: () => invoke<AudioApp[]>("list_audio_apps"),
   listEncoders: () => invoke<EncoderInfo[]>("list_encoders"),
 
+  installSpeech: () => invoke<void>("install_speech"),
+  captionClip: (path: string, jobId: string) => invoke<string>("caption_clip", { path, jobId }),
+  studioExport: (paths: string[], preset: ExportPreset, jobId: string, recover = false, importFile = false) => invoke<string>("studio_export", { paths, preset, jobId, recover, import: importFile }),
+  setClipDetails: (path: string, details: ClipDetails) => invoke<void>("set_clip_details", { path, details }),
+  cleanupLibrary: (olderDays: number, maxGb: number, apply: boolean) => invoke<ClipInfo[]>("cleanup_library", { olderDays, maxGb, apply }),
   listClips: () => invoke<ClipInfo[]>("list_clips"),
   /** Image data URL of a frame near the start. */
   getClipThumbnail: (path: string) => invoke<string>("get_clip_thumbnail", { path }),
@@ -440,9 +448,12 @@ export const api = {
   saveClipCopy: (path: string, range: [number, number] | null, mix: MixSpec | null, viewerMix: unknown) =>
     invoke<string>("save_clip_copy", { path, range, mix, viewerMix }),
 
-  renderClipEdit: (path: string, edit: ClipEdit, mix: MixSpec | null, viewerMix: unknown, jobId: string) =>
-    invoke<string>("render_clip_edit", { path, edit, mix, viewerMix, jobId }),
+  renderClipEdit: (path: string, edit: ClipEdit, mix: MixSpec | null, viewerMix: unknown, jobId: string, preview = false) =>
+    invoke<string>("render_clip_edit", { path, edit, mix, viewerMix, jobId, preview }),
   cancelClipEdit: (jobId: string) => invoke<void>("cancel_clip_edit", { jobId }),
+  clipFrameDuration: (path: string) => invoke<number>("clip_frame_duration", { path }),
+  clipWaveform: (path: string) => invoke<number[]>("clip_waveform", { path }),
+  saveEditRecipe: (path: string, recipe: unknown) => invoke<string>("save_edit_recipe", { path, recipe }),
 
   /** Audio track names (lanes) of a clip. */
   clipTracks: (path: string) => invoke<string[]>("clip_tracks", { path }),

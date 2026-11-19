@@ -12,12 +12,14 @@ mockIPC(async (cmd, args: any) => {
   state.calls.push({ cmd, args });
   if (cmd === "prepare_clip_playback") return new URLSearchParams(location.search).get("media");
   if (cmd === "clip_tracks" || cmd === "clip_audio_preview") return [];
+  if (cmd === "clip_frame_duration") return 1/30;
+  if (cmd === "clip_waveform") return Array.from({ length: 1200 }, (_, i) => Math.abs(Math.sin(i / 20)) * .7);
   if (cmd === "render_clip_edit") {
     await emit("clip_edit_progress", { jobId: args.jobId, fraction: 0.4 });
     if (new URLSearchParams(location.search).has("cancel")) {
       return new Promise((_, reject) => { state.cancel = () => reject(new Error("Export cancelled")); });
     }
-    return "edited.mp4";
+    return args.preview ? new URLSearchParams(location.search).get("media") : "edited.mp4";
   }
   if (cmd === "cancel_clip_edit") state.cancel?.();
 }, { shouldMockEvents: true });
